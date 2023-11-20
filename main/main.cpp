@@ -28,7 +28,6 @@
 #include "freertos/semphr.h"
 
 #include "hal/cache_hal.h"
-#include "main.h"
 #include "dsps_mem.h"
 
 using namespace std;
@@ -296,122 +295,6 @@ static inline void CopyBuffer_ForLoop(void* dest, void* source, uint32_t size, s
     const uint32_t tstop = esp_cpu_get_cycle_count();
     Display_Results(prefix + "for loop copy ", desc, tstart, tstop, dest, source, size);
     
-}
-
-
-/// @brief Copies a buffer using a for loop with 8-bit pointers
-/// @param dest pointer to the buffer to copy to
-/// @param source pointer to the buffer to copy from
-/// @param size amount of memory to copy
-/// @param desc used in the debug messages to describe the copy
-/// @return ESP_OK if successful. Otherwise ESP_FAIL
-esp_err_t CopyBuffer_8BitForLoop(void* dest, void* source, uint32_t size, const char *desc)
-{
-
-    // Attempt the copy using code with a 32 bit pointer
-    uint8_t* pSource = (uint8_t*)source;
-    uint8_t* pDest = (uint8_t*)dest;
-    int aCopies = size;
-    uint32_t tstart = esp_cpu_get_cycle_count();
-
-    // Do the work
-    for (int i = 0; i < aCopies; i++) {
-        pDest[i] = pSource[i];
-    }
-
-    // Display the resuilts
-    const uint32_t tstop = esp_cpu_get_cycle_count();
-    Display_Results("8-bit for loop copy ", desc, tstart, tstop, dest, source, size);
-
-    return ESP_OK;
-
-}
-
-
-/// @brief Copies a buffer using a for loop with 16-bit pointers
-/// @param dest pointer to the buffer to copy to
-/// @param source pointer to the buffer to copy from
-/// @param size amount of memory to copy
-/// @param desc used in the debug messages to describe the copy
-/// @return ESP_OK if successful. Otherwise ESP_FAIL
-esp_err_t CopyBuffer_16BitForLoop(void* dest, void* source, uint32_t size, const char *desc)
-{
-
-    // Attempt the copy using code with a 32 bit pointer
-    uint16_t* pSource = (uint16_t*)source;
-    uint16_t* pDest = (uint16_t*)dest;
-    int aCopies = size / 2;
-    uint32_t tstart = esp_cpu_get_cycle_count();
-
-    // Do the work
-    for (int i = 0; i < aCopies; i++) {
-        pDest[i] = pSource[i];
-    }
-
-    // Display the resuilts
-    const uint32_t tstop = esp_cpu_get_cycle_count();
-    Display_Results("16-bit for loop copy ", desc, tstart, tstop, dest, source, size);
-
-    return ESP_OK;
-
-}
-
-
-/// @brief Copies a buffer using a for loop with 32-bit pointers
-/// @param dest pointer to the buffer to copy to
-/// @param source pointer to the buffer to copy from
-/// @param size amount of memory to copy
-/// @param desc used in the debug messages to describe the copy
-/// @return ESP_OK if successful. Otherwise ESP_FAIL
-esp_err_t CopyBuffer_32BitForLoop(void* dest, void* source, uint32_t size, const char *desc)
-{
-
-    // Attempt the copy using code with a 32 bit pointer
-    uint32_t* pSource32 = (uint32_t*)source;
-    uint32_t* pDest32 = (uint32_t*)dest;
-    int aCopies = size / 4;
-    uint32_t tstart = esp_cpu_get_cycle_count();
-
-    // Do the work
-    for (int i = 0; i < aCopies; i++) {
-        pDest32[i] = pSource32[i];
-    }
-
-    // Display the resuilts
-    const uint32_t tstop = esp_cpu_get_cycle_count();
-    Display_Results("32-bit for loop copy ", desc, tstart, tstop, dest, source, size);
-
-    return ESP_OK;
-
-}
-
-
-/// @brief Copies a buffer using a for loop with 64-bit pointers
-/// @param dest pointer to the buffer to copy to
-/// @param source pointer to the buffer to copy from
-/// @param size amount of memory to copy
-/// @param desc used in the debug messages to describe the copy
-/// @return ESP_OK if successful. Otherwise ESP_FAIL
-esp_err_t CopyBuffer_64BitForLoop(void* dest, void* source, uint32_t size, const char *desc)
-{
-
-    // Attempt the copy using code with a 32 bit pointer
-    uint64_t* pSource64 = (uint64_t*)source;
-    uint64_t* pDest64 = (uint64_t*)dest;
-    int aCopies = size / 8;
-    uint32_t tstart = esp_cpu_get_cycle_count();
-
-    // Do the work
-    for (int i = 0; i < aCopies; i++) {
-        pDest64[i] = pSource64[i];
-    }
-
-    // Display the resuilts
-    const uint32_t tstop = esp_cpu_get_cycle_count();
-    Display_Results("64-bit for loop copy ", desc, tstart, tstop, dest, source, size);
-
-    return ESP_OK;
-
 }
 
 
