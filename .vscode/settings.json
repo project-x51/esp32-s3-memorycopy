@@ -1,0 +1,23 @@
+{
+  "C_Cpp.intelliSenseEngine": "default",
+  "idf.portWin": "COM8",
+  "idf.adapterTargetName": "esp32s3",
+  "idf.openOcdConfigs": [
+    "board/esp32s3-builtin.cfg"
+  ],
+  "idf.flashType": "UART",
+  "files.associations": {
+    "esp_async_memcpy.h": "c",
+    "atomic": "c",
+    "charconv": "c",
+    "format": "c",
+    "functional": "c",
+    "system_error": "c",
+    "xlocale": "c",
+    "xlocbuf": "c",
+    "xlocinfo": "c",
+    "xlocmon": "c",
+    "xmemory": "c",
+    "xstring": "c"
+  }
+}
