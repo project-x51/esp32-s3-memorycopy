@@ -1,6 +1,6 @@
 # esp32-s3-memorycopy
 Benchmarks the various approaches that can be taken to moving data around between internal and external memories on an ESP32-S3. 
-Written for the ESP32-S3-WROOM-1U-N8R8
+Written for the ESP32-S3-WROOM-1U-N8R8 and requires the esp-dsp component to be present as well.
 
 ### Currently supports moving data between...
 + IRAM->IRAM
