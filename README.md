@@ -67,3 +67,6 @@ I (721) Memory Copy: PIE 128-bit PSRAM->PSRAM took 1054546 CPU cycles = 22.23 MB
 I (741) Memory Copy: DSP AES3 PSRAM->PSRAM took 1059057 CPU cycles = 22.13 MB/s
 I (741) main_task: Returned from app_main()
 ```
+
+Thanks to Microcontroller for the hard stuff!
+https://www.esp32.com/viewtopic.php?f=13&t=36808&sid=9af3e432eb4843d96437bc07485415c8
