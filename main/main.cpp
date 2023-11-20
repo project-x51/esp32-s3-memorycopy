@@ -14,6 +14,8 @@
 #include <inttypes.h>
 #include <string>
 #include <string.h>
+#include <utility>
+#include <type_traits>
 
 #include "malloc.h"
 #include "esp_log.h"
@@ -33,11 +35,13 @@ using namespace std;
 
 static const char *TAG = "Memory Copy";
 
+#define INL __attribute__((always_inline))
 
 /**
  * @brief Uses Xtensa's zero-overhead loop to execute a given operation a number of times.
  * This function does \e not save/restore the LOOP registers, so if required these need to be 
  * saved&restored explicitly around the function call.
+ * @note This may fail to assemble when compiled with \c -Og or less
  * 
  * @tparam F Type of the functor to execute
  * @tparam Args Argument types of the functor
@@ -45,30 +49,63 @@ static const char *TAG = "Memory Copy";
  * @param f The functor to invoke
  * @param args Arguments to pass to the functor
  */
-// template<typename F, typename...Args>
-// static inline void INT rpt(const uint32_t cnt, const F& f, Args&&...args) {
+template<typename F, typename...Args>
+static inline void INL rpt(const uint32_t cnt, const F& f, Args&&...args) {
 
-//     bgn:
-//         asm goto (
-//             "LOOPNEZ %[cnt], %l[end]"
-//             : /* no output*/
-//             : [cnt] "r" (cnt)
-//             : /* no clobbers */
-//             : end
-//         );
+    bgn:
+        asm goto (
+            "LOOPNEZ %[cnt], %l[end]"
+            : /* no output*/
+            : [cnt] "r" (cnt)
+            : /* no clobbers */
+            : end
+        );
 
-//             f(std::forward<Args>(args)...);
+            f(std::forward<Args>(args)...);
 
  
-//     end:
-//         /* Tell the compiler that the above code might execute more than once.
-//            The begin label must be before the inital LOOP asm because otherwise
-//            gcc may decide to put one-off setup code between the LOOP asm and the
-//            begin label, i.e. inside the loop.
-//         */
-//         asm goto ("":::: bgn);    
-//         ;
-// }
+    end:
+        /* Tell the compiler that the above code might execute more than once.
+           The begin label must be before the inital LOOP asm because otherwise
+           gcc may decide to put one-off setup code between the LOOP asm and the
+           begin label, i.e. inside the loop.
+        */
+        asm goto ("":::: bgn);    
+        ;
+}
+
+/*
+    q<R> = *(src & ~0xf);
+    src += INC;
+*/
+template<uint8_t R, int16_t INC = 16, typename S>
+requires ( R <= 7 && ((INC & 0xf) == 0) && (-2048 <= INC) && (INC <= 2032) )
+static inline void INL vld_128_ip(S*& src) {
+    asm volatile (
+        "EE.VLD.128.IP q%[reg], %[src], %[inc]"
+        : [src] "+r" (src)
+        : [reg] "i" (R),
+          [inc] "i" (INC)
+        : "memory"
+    );
+}
+
+/*
+    *(dest & ~0xf) = q<R>;
+    dest += INC;
+*/
+template<uint8_t R, int16_t INC = 16, typename D>
+requires ( R <= 7 && ((INC & 0xf) == 0) && (-2048 <= INC) && (INC <= 2032) && !std::is_const_v<D> )
+static inline void INL vst_128_ip(D*& dest) {
+    asm volatile (
+        "EE.VST.128.IP q%[reg], %[dest], %[inc]"
+        : [dest] "+r" (dest)
+        : [reg] "i" (R),
+          [inc] "i" (INC)
+        : "memory"              
+    );
+}    
+
 
 
 /// @brief The source buffer
@@ -79,7 +116,7 @@ void* _dest;
 
 
 // Function prototypes
-esp_err_t CopyBuffer(void* dest, void* source, uint32_t size, uint32_t align, char *desc);
+esp_err_t CopyBuffer(void* dest, void* source, uint32_t size, uint32_t align, const char *desc);
 void Initialize_Buffer(void *buffer, uint32_t size);
 
 
@@ -227,6 +264,8 @@ void Display_Results(string prefix, string desc, uint32_t tstart, uint32_t tstop
     else
         ESP_LOGE(TAG, "%s%s failed because the buffers don't match!", prefix.c_str(), desc.c_str());
 
+    // Give the log output some time to finish before the next test is run.
+    vTaskDelay(50/portTICK_PERIOD_MS);
 }
 
 
@@ -239,7 +278,7 @@ void Display_Results(string prefix, string desc, uint32_t tstart, uint32_t tstop
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
 template<typename T>
-static inline void CopyBuffer_ForLoop(void* dest, void* source, uint32_t size, string prefix, char *desc)
+static inline void CopyBuffer_ForLoop(void* dest, void* source, uint32_t size, string prefix, const char *desc)
 {
     
     // Attempt the copy using code with a 32 bit pointer
@@ -266,7 +305,7 @@ static inline void CopyBuffer_ForLoop(void* dest, void* source, uint32_t size, s
 /// @param size amount of memory to copy
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
-esp_err_t CopyBuffer_8BitForLoop(void* dest, void* source, uint32_t size, char *desc)
+esp_err_t CopyBuffer_8BitForLoop(void* dest, void* source, uint32_t size, const char *desc)
 {
 
     // Attempt the copy using code with a 32 bit pointer
@@ -295,7 +334,7 @@ esp_err_t CopyBuffer_8BitForLoop(void* dest, void* source, uint32_t size, char *
 /// @param size amount of memory to copy
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
-esp_err_t CopyBuffer_16BitForLoop(void* dest, void* source, uint32_t size, char *desc)
+esp_err_t CopyBuffer_16BitForLoop(void* dest, void* source, uint32_t size, const char *desc)
 {
 
     // Attempt the copy using code with a 32 bit pointer
@@ -324,7 +363,7 @@ esp_err_t CopyBuffer_16BitForLoop(void* dest, void* source, uint32_t size, char 
 /// @param size amount of memory to copy
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
-esp_err_t CopyBuffer_32BitForLoop(void* dest, void* source, uint32_t size, char *desc)
+esp_err_t CopyBuffer_32BitForLoop(void* dest, void* source, uint32_t size, const char *desc)
 {
 
     // Attempt the copy using code with a 32 bit pointer
@@ -353,7 +392,7 @@ esp_err_t CopyBuffer_32BitForLoop(void* dest, void* source, uint32_t size, char 
 /// @param size amount of memory to copy
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
-esp_err_t CopyBuffer_64BitForLoop(void* dest, void* source, uint32_t size, char *desc)
+esp_err_t CopyBuffer_64BitForLoop(void* dest, void* source, uint32_t size, const char *desc)
 {
 
     // Attempt the copy using code with a 32 bit pointer
@@ -382,7 +421,7 @@ esp_err_t CopyBuffer_64BitForLoop(void* dest, void* source, uint32_t size, char 
 /// @param size amount of memory to copy
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
-esp_err_t CopyBuffer_memcpy(void* dest, void* source, uint32_t size, char *desc)
+esp_err_t CopyBuffer_memcpy(void* dest, void* source, uint32_t size, const char* desc)
 {
 
     // Copy the source to dest using the memcpy function
@@ -411,7 +450,7 @@ esp_err_t CopyBuffer_memcpy(void* dest, void* source, uint32_t size, char *desc)
 /// @param size amount of memory to copy
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
-esp_err_t CopyBuffer_DMA(void* dest, void* source, uint32_t size, uint32_t align, char *desc)
+esp_err_t CopyBuffer_DMA(void* dest, void* source, uint32_t size, uint32_t align, const char *desc)
 {
 
     // Install the Async memcpy driver.
@@ -421,7 +460,7 @@ esp_err_t CopyBuffer_DMA(void* dest, void* source, uint32_t size, uint32_t align
     //const uint32_t PSRAM_ALIGN = cache_hal_get_cache_line_size(CACHE_TYPE_DATA);
     //const uint32_t INTRAM_ALIGN = PSRAM_ALIGN;
     const async_memcpy_config_t cfg = {
-        .backlog = (size+4091)/4065,
+        .backlog = (size+4091)/4092,
         .sram_trans_align = INTRAM_ALIGN,
         .psram_trans_align = PSRAM_ALIGN,
         .flags = 0
@@ -434,7 +473,6 @@ esp_err_t CopyBuffer_DMA(void* dest, void* source, uint32_t size, uint32_t align
     }
 
     // Initiate a DMA copy
-    esp_err_t ret;
     ESP_LOGD(TAG, "Starting DMA copy.");
     const uint32_t tstart = esp_cpu_get_cycle_count();
     TaskHandle_t task = xTaskGetCurrentTaskHandle();
@@ -445,68 +483,116 @@ esp_err_t CopyBuffer_DMA(void* dest, void* source, uint32_t size, uint32_t align
             // Display the results
             const uint32_t tstop = esp_cpu_get_cycle_count();
             Display_Results("async_memcpy ", desc, tstart, tstop, dest, source, size);
-            ret = ESP_OK;
         } else {
             ESP_LOGE(TAG, "Timed out waiting for async_memcpy.");
-            ret = ESP_FAIL;
         }
     } else {
         ESP_LOGE(TAG, "Failed to start async_memcpy: %i",r);
-        ret = ESP_FAIL;
     }
 
     // Uninstall the driver 
     esp_async_memcpy_uninstall(handle);
 
-    return ESP_OK;
+    return r;
 
 }
 
 
-/// @brief Copies a buffer using the ESP32-S3 PIE 128-bit memory copy instructions
+/// @brief Copies a buffer using the ESP32-S3 PIE 128-bit memory copy instructions with 16 bytes per iteration
 /// @param dest pointer to the buffer to copy to
 /// @param source pointer to the buffer to copy from
 /// @param size amount of memory to copy
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
-esp_err_t CopyBuffer_PIE_128bit(void* dest, void* source, uint32_t size, char *desc)
+esp_err_t CopyBuffer_PIE_128bit_16bytes(void* dest, void* source, uint32_t size, const char *desc)
 {
 
     // Copy the source to dest using the ESP32-S3 PIE 128-bit memory copy instructions
-    const uint32_t tstart = esp_cpu_get_cycle_count();
+
 
     // Do the work
-    // const uint8_t* src_p = (uint8_t*)source;
-    // uint8_t* dest_p = (uint8_t*)dest;
-    // rpt(size / 32, [&src_p, &dest_p]() {
-    //     src_p >> Q0;    // a.k.a. simd::ops::vld_128_ip<0,16>(src);
-    //     src_p >> Q1;
-    //     dest_p << Q0;   // a.k.a. simd::ops::vst_128_ip<0,16>(dest);
-    //     dest_p << Q1;
-    //     }
+    const uint32_t bytes_per_iteration = 16;
+    const uint32_t cnt = size / bytes_per_iteration;
+    const void* src_p = source;
+    void* dest_p = dest;
+
+    const uint32_t tstart = esp_cpu_get_cycle_count();
+
+
+    rpt(cnt, [&src_p,&dest_p]() {
+        vld_128_ip<0>(src_p); // Load 16 bytes from RAM into q0, increment src_p
+        vst_128_ip<0>(dest_p); // Store 16 bytes from q0 to RAM, increment dest_p
+    });
+
+    // Same as above:
+    // asm volatile (
+    //     "LOOPNEZ %[cnt], end_loop%=" "\n"
+    //     "   EE.VLD.128.IP q0, %[src_p], 16" "\n"
+    //     "   EE.VST.128.IP q0, %[dest_p], 16" "\n"
+    //     "end_loop%=:"
+    //     : [src_p] "+&r" (src_p), [dest_p] "+&r" (dest_p)
+    //     : [cnt] "r" (cnt)
+    //     : "memory"
     // );
+
+    // Display the resuilts
+    const uint32_t tstop = esp_cpu_get_cycle_count();
+    Display_Results("PIE 128-bit (16 byte loop) ", desc, tstart, tstop, dest, source, size);
+
+    return ESP_OK;
+
+}
+
+/// @brief Copies a buffer using the ESP32-S3 PIE 128-bit memory copy instructions in a pipeline-friendly 32-byte loop
+/// @param dest pointer to the buffer to copy to
+/// @param source pointer to the buffer to copy from
+/// @param size amount of memory to copy
+/// @param desc used in the debug messages to describe the copy
+/// @return ESP_OK if successful. Otherwise ESP_FAIL
+esp_err_t CopyBuffer_PIE_128bit_32bytes(void* dest, void* source, uint32_t size, const char *desc)
+{
+
+    // Copy the source to dest using the ESP32-S3 PIE 128-bit memory copy instructions
+
 
     // Do the work
     const uint32_t bytes_per_iteration = 32;
     const uint32_t cnt = size / bytes_per_iteration;
-    const uint8_t* src_p = (uint8_t*)source;
-    uint8_t* dest_p = (uint8_t*)dest;
-    asm volatile (
-        "LOOPNEZ %[cnt], end_loop%=" "\n"
-        "   EE.VLD.128.IP q0, %[src_p], 16" "\n"
-        "   EE.VLD.128.IP q1, %[src_p], 16" "\n"
+    const void* src_p = source;
+    void* dest_p = dest;
 
-        "   EE.VST.128.IP q0, %[dest_p], 16" "\n"
-        "   EE.VST.128.IP q1, %[dest_p], 16" "\n"
-        "end_loop%=:"
-        : [src_p] "+&r" (src_p), [dest_p] "+&r" (dest_p)
-        : [cnt] "r" (cnt)
-        : "memory"
-    );
+    const uint32_t tstart = esp_cpu_get_cycle_count();
+
+
+    /* Alternating access between two Q registers allows the pipeline to hide the latency
+       incurred from the data dependency of successive instructions.
+       Interestingly, the still present data dependency on the _address_ register does
+       _not_ induce any pipeline stalls.
+    */
+    rpt(cnt, [&src_p,&dest_p]() {
+        vld_128_ip<0>(src_p); // Load 16 bytes from RAM into q0, increment src_p
+        vld_128_ip<1>(src_p); // Load 16 bytes from RAN into q1, increment src_p
+        vst_128_ip<0>(dest_p); // Store 16 bytes from q0 to RAM, increment dest_p
+        vst_128_ip<1>(dest_p); // Store 16 bytes from q1 to RAM, increment dest_p
+    });
+
+    // Same as above:
+    // asm volatile (
+    //     "LOOPNEZ %[cnt], end_loop%=" "\n"
+    //     "   EE.VLD.128.IP q0, %[src_p], 16" "\n"
+    //     "   EE.VLD.128.IP q1, %[src_p], 16" "\n"
+
+    //     "   EE.VST.128.IP q0, %[dest_p], 16" "\n"
+    //     "   EE.VST.128.IP q1, %[dest_p], 16" "\n"
+    //     "end_loop%=:"
+    //     : [src_p] "+&r" (src_p), [dest_p] "+&r" (dest_p)
+    //     : [cnt] "r" (cnt)
+    //     : "memory"
+    // );
 
     // Display the resuilts
     const uint32_t tstop = esp_cpu_get_cycle_count();
-    Display_Results("PIE 128-bit ", desc, tstart, tstop, dest, source, size);
+    Display_Results("PIE 128-bit (32 byte loop) ", desc, tstart, tstop, dest, source, size);
 
     return ESP_OK;
 
@@ -519,7 +605,7 @@ esp_err_t CopyBuffer_PIE_128bit(void* dest, void* source, uint32_t size, char *d
 /// @param size amount of memory to copy
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
-esp_err_t CopyBuffer_DSP(void* dest, void* source, uint32_t size, char *desc)
+esp_err_t CopyBuffer_DSP(void* dest, void* source, uint32_t size, const char *desc)
 {
 
     // Copy the source to dest using the ESP32-S3 dsp memory copy instructions
@@ -547,8 +633,11 @@ esp_err_t CopyBuffer_DSP(void* dest, void* source, uint32_t size, char *desc)
 /// @param size amount of memory to copy
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
-esp_err_t CopyBuffer(void* dest, void* source, uint32_t size, uint32_t align, char *desc)
+esp_err_t CopyBuffer(void* dest, void* source, uint32_t size, uint32_t align, const char *desc)
 {
+
+    // Wait a moment for previous logging to finish.
+    vTaskDelay(50/portTICK_PERIOD_MS);
 
     // No meaningful difference between a for loop and a while loop
     CopyBuffer_ForLoop<uint8_t>(dest, source, size, "8-bit ", desc);
@@ -565,7 +654,9 @@ esp_err_t CopyBuffer(void* dest, void* source, uint32_t size, uint32_t align, ch
 
     CopyBuffer_DMA(dest, source, size, align, desc);
 
-    CopyBuffer_PIE_128bit(dest, source, size, desc);
+    CopyBuffer_PIE_128bit_16bytes(dest, source, size, desc);
+
+    CopyBuffer_PIE_128bit_32bytes(dest, source, size, desc);
 
     CopyBuffer_DSP(dest, source, size, desc);
 
@@ -574,15 +665,8 @@ esp_err_t CopyBuffer(void* dest, void* source, uint32_t size, uint32_t align, ch
 }
 
 
-
-
-extern "C"
-{
-    void app_main(void);
-}
-
 /// @brief Main application entry point
-void app_main(void)
+extern "C" void app_main(void)
 {
     // Run the copy on 100KB of data with 32 byte alignment
     MemoryCopy_V1(100 * 1024, 32);
