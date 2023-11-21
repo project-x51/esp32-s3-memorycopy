@@ -20,52 +20,56 @@ Log below...
 
 
 ```
-I (391) Memory Copy:
+I (394) Memory Copy:
 
 memory copy version 1.
 
-I (401) Memory Copy: Allocating 2 x 100kb in IRAM, alignment: 32 bytes
-I (421) Memory Copy: 8-bit for loop copy IRAM->IRAM took 819662 CPU cycles = 28.59 MB/s
-I (421) Memory Copy: 16-bit for loop copy IRAM->IRAM took 461530 CPU cycles = 50.78 MB/s
-I (431) Memory Copy: 32-bit for loop copy IRAM->IRAM took 206343 CPU cycles = 113.59 MB/s
-I (441) Memory Copy: 64-bit for loop copy IRAM->IRAM took 128300 CPU cycles = 182.68 MB/s
-I (451) Memory Copy: memcpy IRAM->IRAM took 64658 CPU cycles = 362.48 MB/s
-I (461) Memory Copy: async_memcpy IRAM->IRAM took 412233 CPU cycles = 56.85 MB/s
-I (461) Memory Copy: PIE 128-bit IRAM->IRAM took 13145 CPU cycles = 1783.00 MB/s
-I (471) Memory Copy: DSP AES3 IRAM->IRAM took 17028 CPU cycles = 1376.41 MB/s
+I (404) Memory Copy: Allocating 2 x 100kb in IRAM, alignment: 32 bytes
+I (464) Memory Copy: 8-bit for loop copy IRAM->IRAM took 819922 CPU cycles = 28.59 MB/s
+I (514) Memory Copy: 16-bit for loop copy IRAM->IRAM took 205776 CPU cycles = 113.90 MB/s
+I (564) Memory Copy: 32-bit for loop copy IRAM->IRAM took 103383 CPU cycles = 226.71 MB/s
+I (614) Memory Copy: 64-bit for loop copy IRAM->IRAM took 77682 CPU cycles = 301.71 MB/s
+I (664) Memory Copy: memcpy IRAM->IRAM took 64323 CPU cycles = 364.37 MB/s
+I (714) Memory Copy: async_memcpy IRAM->IRAM took 408520 CPU cycles = 57.37 MB/s
+I (764) Memory Copy: PIE 128-bit (16 byte loop) IRAM->IRAM took 19498 CPU cycles = 1202.05 MB/s
+I (814) Memory Copy: PIE 128-bit (32 byte loop) IRAM->IRAM took 13095 CPU cycles = 1789.81 MB/s
+I (864) Memory Copy: DSP AES3 IRAM->IRAM took 15813 CPU cycles = 1482.17 MB/s
 
-I (471) Memory Copy: Freeing 100kb from IRAM
-I (481) Memory Copy: Allocating 100kb in PSRAM, alignment: 32 bytes
-I (501) Memory Copy: 8-bit for loop copy IRAM->PSRAM took 1075776 CPU cycles = 21.79 MB/s
-I (501) Memory Copy: 16-bit for loop copy IRAM->PSRAM took 720958 CPU cycles = 32.51 MB/s
-I (511) Memory Copy: 32-bit for loop copy IRAM->PSRAM took 462534 CPU cycles = 50.67 MB/s
-I (521) Memory Copy: 64-bit for loop copy IRAM->PSRAM took 422886 CPU cycles = 55.42 MB/s
-I (531) Memory Copy: memcpy IRAM->PSRAM took 413299 CPU cycles = 56.71 MB/s
-I (541) Memory Copy: async_memcpy IRAM->PSRAM took 478345 CPU cycles = 49.00 MB/s
-I (541) Memory Copy: PIE 128-bit IRAM->PSRAM took 403536 CPU cycles = 58.08 MB/s
-I (551) Memory Copy: DSP AES3 IRAM->PSRAM took 409011 CPU cycles = 57.30 MB/s
+I (914) Memory Copy: Freeing 100kb from IRAM
+I (914) Memory Copy: Allocating 100kb in PSRAM, alignment: 32 bytes
+I (964) Memory Copy: 8-bit for loop copy IRAM->PSRAM took 1075498 CPU cycles = 21.79 MB/s
+I (1014) Memory Copy: 16-bit for loop copy IRAM->PSRAM took 461778 CPU cycles = 50.75 MB/s
+I (1064) Memory Copy: 32-bit for loop copy IRAM->PSRAM took 404325 CPU cycles = 57.97 MB/s
+I (1114) Memory Copy: 64-bit for loop copy IRAM->PSRAM took 413871 CPU cycles = 56.63 MB/s
+I (1164) Memory Copy: memcpy IRAM->PSRAM took 413294 CPU cycles = 56.71 MB/s
+I (1214) Memory Copy: async_memcpy IRAM->PSRAM took 465457 CPU cycles = 50.35 MB/s
+I (1264) Memory Copy: PIE 128-bit (16 byte loop) IRAM->PSRAM took 403440 CPU cycles = 58.09 MB/s
+I (1314) Memory Copy: PIE 128-bit (32 byte loop) IRAM->PSRAM took 403638 CPU cycles = 58.07 MB/s
+I (1364) Memory Copy: DSP AES3 IRAM->PSRAM took 405830 CPU cycles = 57.75 MB/s
 
-I (551) Memory Copy: Swapping source and destination buffers
-I (571) Memory Copy: 8-bit for loop copy PSRAM->IRAM took 1040185 CPU cycles = 22.53 MB/s
-I (581) Memory Copy: 16-bit for loop copy PSRAM->IRAM took 696069 CPU cycles = 33.67 MB/s
-I (591) Memory Copy: 32-bit for loop copy PSRAM->IRAM took 615118 CPU cycles = 38.10 MB/s
-I (591) Memory Copy: 64-bit for loop copy PSRAM->IRAM took 602883 CPU cycles = 38.88 MB/s
-I (601) Memory Copy: memcpy PSRAM->IRAM took 607278 CPU cycles = 38.59 MB/s
-I (611) Memory Copy: async_memcpy PSRAM->IRAM took 458985 CPU cycles = 51.06 MB/s
-I (621) Memory Copy: PIE 128-bit PSRAM->IRAM took 605593 CPU cycles = 38.70 MB/s
-I (631) Memory Copy: DSP AES3 PSRAM->IRAM took 611055 CPU cycles = 38.36 MB/s
+I (1414) Memory Copy: Swapping source and destination buffers
+I (1464) Memory Copy: 8-bit for loop copy PSRAM->IRAM took 1037131 CPU cycles = 22.60 MB/s
+I (1514) Memory Copy: 16-bit for loop copy PSRAM->IRAM took 621710 CPU cycles = 37.70 MB/s
+I (1564) Memory Copy: 32-bit for loop copy PSRAM->IRAM took 603621 CPU cycles = 38.83 MB/s
+I (1614) Memory Copy: 64-bit for loop copy PSRAM->IRAM took 603466 CPU cycles = 38.84 MB/s
+I (1664) Memory Copy: memcpy PSRAM->IRAM took 605957 CPU cycles = 38.68 MB/s
+I (1714) Memory Copy: async_memcpy PSRAM->IRAM took 447733 CPU cycles = 52.35 MB/s
+I (1764) Memory Copy: PIE 128-bit (16 byte loop) PSRAM->IRAM took 605494 CPU cycles = 38.71 MB/s
+I (1814) Memory Copy: PIE 128-bit (32 byte loop) PSRAM->IRAM took 605790 CPU cycles = 38.69 MB/s
+I (1864) Memory Copy: DSP AES3 PSRAM->IRAM took 607982 CPU cycles = 38.55 MB/s
 
-I (631) Memory Copy: Freeing 100kb from IRAM
-I (631) Memory Copy: Allocating 100kb in PSRAM, alignment: 32 bytes
-I (651) Memory Copy: 8-bit for loop copy PSRAM->PSRAM took 1422563 CPU cycles = 16.48 MB/s
-I (661) Memory Copy: 16-bit for loop copy PSRAM->PSRAM took 1090496 CPU cycles = 21.49 MB/s
-I (681) Memory Copy: 32-bit for loop copy PSRAM->PSRAM took 1049829 CPU cycles = 22.33 MB/s
-I (691) Memory Copy: 64-bit for loop copy PSRAM->PSRAM took 1049128 CPU cycles = 22.34 MB/s
-I (701) Memory Copy: memcpy PSRAM->PSRAM took 1049045 CPU cycles = 22.34 MB/s
-I (711) Memory Copy: async_memcpy PSRAM->PSRAM took 895774 CPU cycles = 26.16 MB/s
-I (721) Memory Copy: PIE 128-bit PSRAM->PSRAM took 1054546 CPU cycles = 22.23 MB/s
-I (741) Memory Copy: DSP AES3 PSRAM->PSRAM took 1059057 CPU cycles = 22.13 MB/s
-I (741) main_task: Returned from app_main()
+I (1914) Memory Copy: Freeing 100kb from IRAM
+I (1914) Memory Copy: Allocating 100kb in PSRAM, alignment: 32 bytes
+I (1974) Memory Copy: 8-bit for loop copy PSRAM->PSRAM took 1412578 CPU cycles = 16.59 MB/s
+I (2034) Memory Copy: 16-bit for loop copy PSRAM->PSRAM took 1052370 CPU cycles = 22.27 MB/s
+I (2094) Memory Copy: 32-bit for loop copy PSRAM->PSRAM took 1046370 CPU cycles = 22.40 MB/s
+I (2154) Memory Copy: 64-bit for loop copy PSRAM->PSRAM took 1046215 CPU cycles = 22.40 MB/s
+I (2214) Memory Copy: memcpy PSRAM->PSRAM took 1045637 CPU cycles = 22.41 MB/s
+I (2274) Memory Copy: async_memcpy PSRAM->PSRAM took 887275 CPU cycles = 26.42 MB/s
+I (2334) Memory Copy: PIE 128-bit (16 byte loop) PSRAM->PSRAM took 1054866 CPU cycles = 22.22 MB/s
+I (2394) Memory Copy: PIE 128-bit (32 byte loop) PSRAM->PSRAM took 1053534 CPU cycles = 22.25 MB/s
+I (2454) Memory Copy: DSP AES3 PSRAM->PSRAM took 1055945 CPU cycles = 22.20 MB/s
+I (2504) main_task: Returned from app_main()
 ```
 
 Thanks to Microcontroller for the hard stuff!
