@@ -74,7 +74,8 @@ I (2506) main_task: Returned from app_main()
 ```
 
 Thanks to Microcontroller and X-Ryl669 for the hard stuff!
-https://www.esp32.com/viewtopic.php?f=13&t=36808&sid=9af3e432eb4843d96437bc07485415c8
++ [Original Thread](https://www.esp32.com/viewtopic.php?f=13&t=36808&sid=9af3e432eb4843d96437bc07485415c8)
++ [Suggestions](https://github.com/project-x51/esp32-s3-memorycopy/issues/2)
 
 
 # Version Tracking
