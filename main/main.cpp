@@ -127,7 +127,7 @@ void IRAM_ATTR MemoryCopy_V1(uint32_t size, uint32_t align)
 {
 
     // Hello world
-    ESP_LOGI(TAG, "\n\nmemory copy version 1.\n");
+    ESP_LOGI(TAG, "\n\nmemory copy version 1.1\n");
 
     // Test copying from IRAM to IRAM using 32 byte alignment
     ESP_LOGI(TAG, "Allocating 2 x %" PRIu32 "kb in IRAM, alignment: %" PRIu32 " bytes", size/1024, align);
