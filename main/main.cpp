@@ -49,7 +49,7 @@ static const char *TAG = "Memory Copy";
  * @param args Arguments to pass to the functor
  */
 template<typename F, typename...Args>
-static inline void INL rpt(const uint32_t cnt, const F& f, Args&&...args) {
+static IRAM_ATTR inline void INL rpt(const uint32_t cnt, const F& f, Args&&...args) {
 
     bgn:
         asm goto (
@@ -79,7 +79,7 @@ static inline void INL rpt(const uint32_t cnt, const F& f, Args&&...args) {
 */
 template<uint8_t R, int16_t INC = 16, typename S>
 requires ( R <= 7 && ((INC & 0xf) == 0) && (-2048 <= INC) && (INC <= 2032) )
-static inline void INL vld_128_ip(S*& src) {
+static IRAM_ATTR inline void INL vld_128_ip(S*& src) {
     asm volatile (
         "EE.VLD.128.IP q%[reg], %[src], %[inc]"
         : [src] "+r" (src)
@@ -95,7 +95,7 @@ static inline void INL vld_128_ip(S*& src) {
 */
 template<uint8_t R, int16_t INC = 16, typename D>
 requires ( R <= 7 && ((INC & 0xf) == 0) && (-2048 <= INC) && (INC <= 2032) && !std::is_const_v<D> )
-static inline void INL vst_128_ip(D*& dest) {
+static IRAM_ATTR inline void INL vst_128_ip(D*& dest) {
     asm volatile (
         "EE.VST.128.IP q%[reg], %[dest], %[inc]"
         : [dest] "+r" (dest)
@@ -123,7 +123,7 @@ void Initialize_Buffer(void *buffer, uint32_t size);
 /// @brief Copies memory between various RAM types using different methods and benchmarks the performance
 /// @param size The size of the memory to copy
 /// @param align The alignment size to use when allocating the memory
-void MemoryCopy_V1(uint32_t size, uint32_t align)
+void IRAM_ATTR MemoryCopy_V1(uint32_t size, uint32_t align)
 {
 
     // Hello world
@@ -182,7 +182,7 @@ void MemoryCopy_V1(uint32_t size, uint32_t align)
 /// @param event Event object, which contains related data, reserved for future
 /// @param cb_args User defined arguments, passed from esp_async_memcpy function
 /// @return Whether a high priority task is woken up by the callback function
-static bool dmacpy_cb(async_memcpy_t hdl, async_memcpy_event_t*, void* args) {
+static IRAM_ATTR bool dmacpy_cb(async_memcpy_t hdl, async_memcpy_event_t*, void* args) {
     BaseType_t r = pdFALSE;
     xTaskNotifyFromISR((TaskHandle_t)args,0,eNoAction,&r);
     return (r!=pdFALSE);
@@ -277,7 +277,7 @@ void Display_Results(string prefix, string desc, uint32_t tstart, uint32_t tstop
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
 template<typename T>
-static inline void CopyBuffer_ForLoop(void* dest, void* source, uint32_t size, string prefix, const char *desc)
+static IRAM_ATTR inline void CopyBuffer_ForLoop(void* dest, void* source, uint32_t size, string prefix, const char *desc)
 {
     
     // Attempt the copy using code with a 32 bit pointer
@@ -304,7 +304,7 @@ static inline void CopyBuffer_ForLoop(void* dest, void* source, uint32_t size, s
 /// @param size amount of memory to copy
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
-esp_err_t CopyBuffer_memcpy(void* dest, void* source, uint32_t size, const char* desc)
+IRAM_ATTR esp_err_t CopyBuffer_memcpy(void* dest, void* source, uint32_t size, const char* desc)
 {
 
     // Copy the source to dest using the memcpy function
@@ -333,7 +333,7 @@ esp_err_t CopyBuffer_memcpy(void* dest, void* source, uint32_t size, const char*
 /// @param size amount of memory to copy
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
-esp_err_t CopyBuffer_DMA(void* dest, void* source, uint32_t size, uint32_t align, const char *desc)
+IRAM_ATTR esp_err_t CopyBuffer_DMA(void* dest, void* source, uint32_t size, uint32_t align, const char *desc)
 {
 
     // Install the Async memcpy driver.
@@ -387,7 +387,7 @@ esp_err_t CopyBuffer_DMA(void* dest, void* source, uint32_t size, uint32_t align
 /// @param size amount of memory to copy
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
-esp_err_t CopyBuffer_PIE_128bit_16bytes(void* dest, void* source, uint32_t size, const char *desc)
+IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_16bytes(void* dest, void* source, uint32_t size, const char *desc)
 {
 
     // Copy the source to dest using the ESP32-S3 PIE 128-bit memory copy instructions
@@ -432,7 +432,7 @@ esp_err_t CopyBuffer_PIE_128bit_16bytes(void* dest, void* source, uint32_t size,
 /// @param size amount of memory to copy
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
-esp_err_t CopyBuffer_PIE_128bit_32bytes(void* dest, void* source, uint32_t size, const char *desc)
+IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_32bytes(void* dest, void* source, uint32_t size, const char *desc)
 {
 
     // Copy the source to dest using the ESP32-S3 PIE 128-bit memory copy instructions
@@ -488,7 +488,7 @@ esp_err_t CopyBuffer_PIE_128bit_32bytes(void* dest, void* source, uint32_t size,
 /// @param size amount of memory to copy
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
-esp_err_t CopyBuffer_DSP(void* dest, void* source, uint32_t size, const char *desc)
+IRAM_ATTR esp_err_t CopyBuffer_DSP(void* dest, void* source, uint32_t size, const char *desc)
 {
 
     // Copy the source to dest using the ESP32-S3 dsp memory copy instructions
@@ -516,7 +516,7 @@ esp_err_t CopyBuffer_DSP(void* dest, void* source, uint32_t size, const char *de
 /// @param size amount of memory to copy
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
-esp_err_t CopyBuffer(void* dest, void* source, uint32_t size, uint32_t align, const char *desc)
+IRAM_ATTR esp_err_t CopyBuffer(void* dest, void* source, uint32_t size, uint32_t align, const char *desc)
 {
 
     // Wait a moment for previous logging to finish.
