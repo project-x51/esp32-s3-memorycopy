@@ -30,6 +30,10 @@
 #include "hal/cache_hal.h"
 #include "dsps_mem.h"
 
+#include "esp_cache.h"
+// #include "esp_mmu_map.h"
+#include "hal/mmu_hal.h"
+
 using namespace std;
 
 static const char *TAG = "Memory Copy";
@@ -103,7 +107,99 @@ static IRAM_ATTR inline void INL vst_128_ip(D*& dest) {
           [inc] "i" (INC)
         : "memory"              
     );
-}    
+}
+
+/**
+ * @brief Flush and invalidate a memory region from the cache.
+ * 
+ * @param addr 
+ * @param size 
+ * @return true 
+ * @return false 
+ */
+static inline bool flushCache(void* const addr, const size_t size) {
+    return esp_cache_msync(addr,size,ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_TYPE_DATA) == ESP_OK;
+}
+
+/**
+ * @brief Invalidate a memory region from the cache.
+ * 
+ * @param addr 
+ * @param size 
+ * @return true 
+ * @return false 
+ */
+static inline bool invalidateCache(void* const addr, const size_t size) {
+    return esp_cache_msync(addr,size,ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_TYPE_DATA) == ESP_OK;
+}
+
+/**
+ * @brief Remove data to be overwritte from the cache.
+ * 
+ * @param addr 
+ * @param size 
+ * @return true 
+ * @return false 
+ */
+static inline bool uncacheForWrite(void* const addr, const size_t size) {
+    return invalidateCache(addr,size);
+}
+
+/**
+ * @brief Remove data to be read from the cache.
+ * 
+ * @param addr 
+ * @param size 
+ * @return true 
+ * @return false 
+ */
+static inline bool uncacheForRead(void* const addr, const size_t size) {
+    return flushCache(addr,size) && invalidateCache(addr,size);
+}
+
+static inline bool isExtMem(void* const addr) {
+    // esp_paddr_t paddr;
+    // mmu_target_t mmu;
+    return mmu_hal_check_valid_ext_vaddr_region(0, (uint32_t)addr, 1, (mmu_vaddr_t)(MMU_VADDR_DATA | MMU_VADDR_INSTRUCTION));
+    // return esp_mmu_vaddr_to_paddr(addr, &paddr, &mmu) == ESP_OK;
+}
+
+
+static inline void INL compiler_mem_barrier(void* const addr, const size_t size) {
+    /* Let the compiler know that
+        a) we need all data actually written to memory at addr before this point, and
+        b) it cannot make any assumptions about the memory content at addr after this point.
+    */
+    asm volatile("":"+m" (*(uint8_t(*)[size])addr));
+}
+
+// static inline void INL compiler_fence_release(void* const addr, const size_t size) {
+//     // Let the compiler know that we need all data actually written to memory at this point.
+//     asm volatile(""::"m" (*(uint8_t(*)[size])addr));
+// }
+
+
+
+/**
+ * @brief Preps the cache for both \p dest and \p src by flushing & invalidating any cached data.
+ * 
+ * @param dest destination where data will be subsequently written to
+ * @param src source where data will be subsequently read from
+ * @param size size in bytes of the \p dest and \p src memory regions
+ * @return true \p dest \e is cached memory and was successfully invalidated from the cache
+ * @return false \p dest is \e not cached memory
+ */
+static inline bool prepareCache(void* const dest, void* const src, const size_t size) {
+    compiler_mem_barrier(src,size);
+    if(isExtMem(src)) {
+        uncacheForRead(src,size);
+    }
+    if(isExtMem(dest)) {
+        return uncacheForWrite(dest,size);
+    } else {
+        return false;
+    }
+}
 
 
 
@@ -127,12 +223,12 @@ void IRAM_ATTR MemoryCopy_V1(uint32_t size, uint32_t align)
 {
 
     // Hello world
-    ESP_LOGI(TAG, "\n\nmemory copy version 1.1\n");
+    ESP_LOGI(TAG, "\n\nmemory copy version 1.2\n");
 
     // Test copying from IRAM to IRAM using 32 byte alignment
     ESP_LOGI(TAG, "Allocating 2 x %" PRIu32 "kb in IRAM, alignment: %" PRIu32 " bytes", size/1024, align);
-    _source = heap_caps_aligned_alloc(align, size, MALLOC_CAP_DMA);
-    _dest = heap_caps_aligned_alloc(align, size, MALLOC_CAP_DMA);
+    _source = heap_caps_aligned_alloc(align, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    _dest = heap_caps_aligned_alloc(align, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     if(!_dest || !_source) {
         ESP_LOGE(TAG, "Memory Allocation failed");
         return;
@@ -283,12 +379,21 @@ static IRAM_ATTR inline void CopyBuffer_ForLoop(void* dest, void* source, uint32
     // Attempt the copy using code with a 32 bit pointer
     T* pSource = (T*)source;
     T* pDest = (T*)dest;
-    int aCopies = size / sizeof(T);
-    uint32_t tstart = esp_cpu_get_cycle_count();
+    const int aCopies = size / sizeof(T);
+
+    const bool needFlush = prepareCache(pDest,pSource,size);
+
+    const uint32_t tstart = esp_cpu_get_cycle_count();
 
     // Do the work
     for (int i = 0; i < aCopies; i++) {
         pDest[i] = pSource[i];
+    }
+
+    compiler_mem_barrier(dest,size);
+
+    if(needFlush) {
+        flushCache(dest,size);
     }
 
     // Display the results
@@ -307,11 +412,17 @@ static IRAM_ATTR inline void CopyBuffer_ForLoop(void* dest, void* source, uint32
 IRAM_ATTR esp_err_t CopyBuffer_memcpy(void* dest, void* source, uint32_t size, const char* desc)
 {
 
+    const bool needFlush = prepareCache(dest,source,size);
+
     // Copy the source to dest using the memcpy function
     const uint32_t tstart = esp_cpu_get_cycle_count();
 
     // Do the work
     void* ret = memcpy(dest, source, size);
+
+    if(needFlush) {
+        flushCache(dest,size);
+    }
 
     // Display the resuilts
     const uint32_t tstop = esp_cpu_get_cycle_count();
@@ -336,6 +447,9 @@ IRAM_ATTR esp_err_t CopyBuffer_memcpy(void* dest, void* source, uint32_t size, c
 IRAM_ATTR esp_err_t CopyBuffer_DMA(void* dest, void* source, uint32_t size, uint32_t align, const char *desc)
 {
 
+    // DMA doesn't use the cache, so no cache prep needed.
+    const bool needFlush = prepareCache(dest,source,size);
+
     // Install the Async memcpy driver.
     ESP_LOGD(TAG, "Installing async_memcpy driver to support %" PRIu32 " byte transfers", size);
     const uint32_t PSRAM_ALIGN = align;
@@ -357,12 +471,14 @@ IRAM_ATTR esp_err_t CopyBuffer_DMA(void* dest, void* source, uint32_t size, uint
 
     // Initiate a DMA copy
     ESP_LOGD(TAG, "Starting DMA copy.");
+    TaskHandle_t task = xTaskGetCurrentTaskHandle();    
     const uint32_t tstart = esp_cpu_get_cycle_count();
-    TaskHandle_t task = xTaskGetCurrentTaskHandle();
     r = esp_async_memcpy(handle, _dest, _source, size, &dmacpy_cb, (void*)task);
     if(r == ESP_OK) {
         if(xTaskNotifyWait(0,0,0,1000/portTICK_PERIOD_MS)) {
-
+            if(needFlush) {
+                flushCache(dest,size);
+            }
             // Display the results
             const uint32_t tstop = esp_cpu_get_cycle_count();
             Display_Results("async_memcpy ", desc, tstart, tstop, dest, source, size);
@@ -390,14 +506,16 @@ IRAM_ATTR esp_err_t CopyBuffer_DMA(void* dest, void* source, uint32_t size, uint
 IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_16bytes(void* dest, void* source, uint32_t size, const char *desc)
 {
 
-    // Copy the source to dest using the ESP32-S3 PIE 128-bit memory copy instructions
 
+    // Copy the source to dest using the ESP32-S3 PIE 128-bit memory copy instructions
 
     // Do the work
     const uint32_t bytes_per_iteration = 16;
     const uint32_t cnt = size / bytes_per_iteration;
     const void* src_p = source;
     void* dest_p = dest;
+
+    const bool needFlush = prepareCache(dest,source,size);
 
     const uint32_t tstart = esp_cpu_get_cycle_count();
 
@@ -417,6 +535,10 @@ IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_16bytes(void* dest, void* source, uint
     //     : [cnt] "r" (cnt)
     //     : "memory"
     // );
+
+    if(needFlush) {
+        flushCache(dest,size);
+    }
 
     // Display the resuilts
     const uint32_t tstop = esp_cpu_get_cycle_count();
@@ -444,6 +566,8 @@ IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_32bytes(void* dest, void* source, uint
     const void* src_p = source;
     void* dest_p = dest;
 
+    const bool needFlush = prepareCache(dest,source,size);    
+
     const uint32_t tstart = esp_cpu_get_cycle_count();
 
 
@@ -454,7 +578,7 @@ IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_32bytes(void* dest, void* source, uint
     */
     rpt(cnt, [&src_p,&dest_p]() {
         vld_128_ip<0>(src_p); // Load 16 bytes from RAM into q0, increment src_p
-        vld_128_ip<1>(src_p); // Load 16 bytes from RAN into q1, increment src_p
+        vld_128_ip<1>(src_p); // Load 16 bytes from RAM into q1, increment src_p
         vst_128_ip<0>(dest_p); // Store 16 bytes from q0 to RAM, increment dest_p
         vst_128_ip<1>(dest_p); // Store 16 bytes from q1 to RAM, increment dest_p
     });
@@ -472,6 +596,10 @@ IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_32bytes(void* dest, void* source, uint
     //     : [cnt] "r" (cnt)
     //     : "memory"
     // );
+
+    if(needFlush) {
+        flushCache(dest,size);
+    }    
 
     // Display the resuilts
     const uint32_t tstop = esp_cpu_get_cycle_count();
@@ -491,6 +619,8 @@ IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_32bytes(void* dest, void* source, uint
 IRAM_ATTR esp_err_t CopyBuffer_DSP(void* dest, void* source, uint32_t size, const char *desc)
 {
 
+    const bool needFlush = prepareCache(dest,source,size);    
+
     // Copy the source to dest using the ESP32-S3 dsp memory copy instructions
     const uint32_t tstart = esp_cpu_get_cycle_count();
 
@@ -500,6 +630,10 @@ IRAM_ATTR esp_err_t CopyBuffer_DSP(void* dest, void* source, uint32_t size, cons
         ESP_LOGE(TAG, "Failed to execute dsps_memcpy_aes3.");
         return ESP_FAIL;
     }
+
+    if(needFlush) {
+        flushCache(dest,size);
+    }    
     
     // Display the resuilts
     const uint32_t tstop = esp_cpu_get_cycle_count();
