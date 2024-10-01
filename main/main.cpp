@@ -6,7 +6,7 @@
 * Reporting "invalid argument" on the call to esp_async_memcpy
 *
 * Using an ESP32-S3-WROOM-1U-N8R8 module
-* Works with ESP-IDF 5.1.1
+* Works with ESP-IDF 5.3.x
 *  
 */
 
@@ -37,6 +37,11 @@
 using namespace std;
 
 static const char *TAG = "Memory Copy";
+
+
+// Uncomment to use the PSRAM cache
+#define USE_CACHE 
+
 
 #define INL __attribute__((always_inline))
 
@@ -186,10 +191,17 @@ static inline void INL compiler_mem_barrier(void* const addr, const size_t size)
  * @param dest destination where data will be subsequently written to
  * @param src source where data will be subsequently read from
  * @param size size in bytes of the \p dest and \p src memory regions
+ * @param useCache whether to use the cache. If \c false, this function does nothing
  * @return true \p dest \e is cached memory and was successfully invalidated from the cache
  * @return false \p dest is \e not cached memory
  */
-static inline bool prepareCache(void* const dest, void* const src, const size_t size) {
+static inline bool prepareCache(void* const dest, void* const src, const size_t size, const bool useCache) 
+{
+
+    // Do nothing if we're not using the cache
+    if (! useCache)
+        return false;
+
     compiler_mem_barrier(src,size);
     if(isExtMem(src)) {
         uncacheForRead(src,size);
@@ -211,66 +223,8 @@ void* _dest;
 
 
 // Function prototypes
-esp_err_t CopyBuffer(void* dest, void* source, uint32_t size, uint32_t align, const char *desc);
+esp_err_t CopyBuffer(void* dest, void* source, uint32_t size, uint32_t align, bool useCache, const char *desc);
 void Initialize_Buffer(void *buffer, uint32_t size);
-
-
-
-/// @brief Copies memory between various RAM types using different methods and benchmarks the performance
-/// @param size The size of the memory to copy
-/// @param align The alignment size to use when allocating the memory
-void IRAM_ATTR MemoryCopy_V1(uint32_t size, uint32_t align)
-{
-
-    // Hello world
-    ESP_LOGI(TAG, "\n\nmemory copy version 1.2\n");
-
-    // Test copying from IRAM to IRAM using 32 byte alignment
-    ESP_LOGI(TAG, "Allocating 2 x %" PRIu32 "kb in IRAM, alignment: %" PRIu32 " bytes", size/1024, align);
-    _source = heap_caps_aligned_alloc(align, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-    _dest = heap_caps_aligned_alloc(align, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-    if(!_dest || !_source) {
-        ESP_LOGE(TAG, "Memory Allocation failed");
-        return;
-    }
-    Initialize_Buffer(_source, size);
-    CopyBuffer(_source, _dest, size, align, "IRAM->IRAM");
-
-    // Test copying from IRAM to PSRAM using 32 byte alignment
-    printf("\n");
-    ESP_LOGI(TAG, "Freeing %" PRIu32 "kb from IRAM", size/1024);
-    free(_dest);
-    ESP_LOGI(TAG, "Allocating %" PRIu32 "kb in PSRAM, alignment: %" PRIu32 " bytes", size/1024, align);
-    _dest = heap_caps_aligned_alloc(align, size, MALLOC_CAP_SPIRAM);
-    if(!_dest || !_source) {
-        ESP_LOGE(TAG, "Memory Allocation failed");
-        return;
-    }
-    CopyBuffer(_source, _dest, size, align, "IRAM->PSRAM");
-
-    // Test copying from PSRAM to IRAM using 32 byte alignment
-    printf("\n");
-    ESP_LOGI(TAG, "Swapping source and destination buffers");
-    void* temp = _source; _source = _dest; _dest = temp;
-    CopyBuffer(_source, _dest, size, align, "PSRAM->IRAM");
-
-    // Test copying from PSRAM to PSRAM using 32 byte alignment
-    printf("\n");
-    ESP_LOGI(TAG, "Freeing %" PRIu32 "kb from IRAM", size/1024);
-    free(_dest);
-    ESP_LOGI(TAG, "Allocating %" PRIu32 "kb in PSRAM, alignment: %" PRIu32 " bytes", size/1024, align);
-    _dest = heap_caps_aligned_alloc(align, size, MALLOC_CAP_SPIRAM);
-    if(!_dest || !_source) {
-        ESP_LOGE(TAG, "Memory Allocation failed");
-        return;
-    }
-    CopyBuffer(_source, _dest, size, align, "PSRAM->PSRAM");
-
-    // Free the memory
-    free(_source);
-    free(_dest);
-
-}
 
 
 /// @brief Async Memory copy callback implementation, running in ISR context
@@ -373,7 +327,7 @@ void Display_Results(string prefix, string desc, uint32_t tstart, uint32_t tstop
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
 template<typename T>
-static IRAM_ATTR inline void CopyBuffer_ForLoop(void* dest, void* source, uint32_t size, string prefix, const char *desc)
+static IRAM_ATTR inline void CopyBuffer_ForLoop(void* dest, void* source, uint32_t size, string prefix, const char *desc, const bool useCache)
 {
     
     // Attempt the copy using code with a 32 bit pointer
@@ -381,20 +335,27 @@ static IRAM_ATTR inline void CopyBuffer_ForLoop(void* dest, void* source, uint32
     T* pDest = (T*)dest;
     const int aCopies = size / sizeof(T);
 
-    const bool needFlush = prepareCache(pDest,pSource,size);
+#ifdef USE_CACHE
+    // Prepare the cache
+    const bool needFlush = prepareCache(dest, source, size, useCache);
+#endif
 
+    // Start our performance timer
     const uint32_t tstart = esp_cpu_get_cycle_count();
 
-    // Do the work
+    // Do the work - using a for loop
+    // ==============================
     for (int i = 0; i < aCopies; i++) {
         pDest[i] = pSource[i];
     }
 
-    compiler_mem_barrier(dest,size);
-
-    if(needFlush) {
-        flushCache(dest,size);
+#ifdef USE_CACHE
+    // Flush the cache if needed
+    if (needFlush) {
+        compiler_mem_barrier(dest,size);
+        flushCache(dest, size);
     }
+#endif
 
     // Display the results
     const uint32_t tstop = esp_cpu_get_cycle_count();
@@ -409,20 +370,28 @@ static IRAM_ATTR inline void CopyBuffer_ForLoop(void* dest, void* source, uint32
 /// @param size amount of memory to copy
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
-IRAM_ATTR esp_err_t CopyBuffer_memcpy(void* dest, void* source, uint32_t size, const char* desc)
+IRAM_ATTR esp_err_t CopyBuffer_memcpy(void* dest, void* source, uint32_t size, const char* desc, const bool useCache)
 {
 
-    const bool needFlush = prepareCache(dest,source,size);
+#ifdef USE_CACHE
+    // Prepare the cache
+    const bool needFlush = prepareCache(dest, source, size, useCache);
+#endif
 
-    // Copy the source to dest using the memcpy function
+    // Start our performance timer
     const uint32_t tstart = esp_cpu_get_cycle_count();
 
-    // Do the work
+    // Do the work - using the memcpy function
+    // =======================================
     void* ret = memcpy(dest, source, size);
 
-    if(needFlush) {
-        flushCache(dest,size);
+#ifdef USE_CACHE
+    // Flush the cache if needed
+    if (needFlush) {
+        //compiler_mem_barrier(dest,size);
+        flushCache(dest, size);
     }
+#endif
 
     // Display the resuilts
     const uint32_t tstop = esp_cpu_get_cycle_count();
@@ -448,7 +417,7 @@ IRAM_ATTR esp_err_t CopyBuffer_DMA(void* dest, void* source, uint32_t size, uint
 {
 
     // DMA doesn't use the cache, so no cache prep needed.
-    const bool needFlush = prepareCache(dest,source,size);
+    // const bool needFlush = prepareCache(dest,source,size);
 
     // Install the Async memcpy driver.
     ESP_LOGD(TAG, "Installing async_memcpy driver to support %" PRIu32 " byte transfers", size);
@@ -476,9 +445,9 @@ IRAM_ATTR esp_err_t CopyBuffer_DMA(void* dest, void* source, uint32_t size, uint
     r = esp_async_memcpy(handle, _dest, _source, size, &dmacpy_cb, (void*)task);
     if(r == ESP_OK) {
         if(xTaskNotifyWait(0,0,0,1000/portTICK_PERIOD_MS)) {
-            if(needFlush) {
-                flushCache(dest,size);
-            }
+            // if(needFlush) {
+            //     flushCache(dest,size);
+            // }
             // Display the results
             const uint32_t tstop = esp_cpu_get_cycle_count();
             Display_Results("async_memcpy ", desc, tstart, tstop, dest, source, size);
@@ -503,23 +472,27 @@ IRAM_ATTR esp_err_t CopyBuffer_DMA(void* dest, void* source, uint32_t size, uint
 /// @param size amount of memory to copy
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
-IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_16bytes(void* dest, void* source, uint32_t size, const char *desc)
+IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_16bytes(void* dest, void* source, uint32_t size, const char *desc, const bool useCache)
 {
 
 
     // Copy the source to dest using the ESP32-S3 PIE 128-bit memory copy instructions
 
-    // Do the work
+    // Setup the variables
     const uint32_t bytes_per_iteration = 16;
     const uint32_t cnt = size / bytes_per_iteration;
     const void* src_p = source;
     void* dest_p = dest;
 
-    const bool needFlush = prepareCache(dest,source,size);
+#ifdef USE_CACHE
+    // Prepare the cache
+    const bool needFlush = prepareCache(dest, source, size, useCache);
+#endif
 
+    // Start our performance timer
     const uint32_t tstart = esp_cpu_get_cycle_count();
 
-
+    // Do the work - using the ESP32-S3 PIE 128-bit memory copy instructions moving 16 bytes per iteration
     rpt(cnt, [&src_p,&dest_p]() {
         vld_128_ip<0>(src_p); // Load 16 bytes from RAM into q0, increment src_p
         vst_128_ip<0>(dest_p); // Store 16 bytes from q0 to RAM, increment dest_p
@@ -536,9 +509,13 @@ IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_16bytes(void* dest, void* source, uint
     //     : "memory"
     // );
 
-    if(needFlush) {
-        flushCache(dest,size);
+#ifdef USE_CACHE
+    // Flush the cache if needed
+    if (needFlush) {
+        compiler_mem_barrier(dest,size);
+        flushCache(dest, size);
     }
+#endif
 
     // Display the resuilts
     const uint32_t tstop = esp_cpu_get_cycle_count();
@@ -554,7 +531,7 @@ IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_16bytes(void* dest, void* source, uint
 /// @param size amount of memory to copy
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
-IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_32bytes(void* dest, void* source, uint32_t size, const char *desc)
+IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_32bytes(void* dest, void* source, uint32_t size, const char *desc, const bool useCache)
 {
 
     // Copy the source to dest using the ESP32-S3 PIE 128-bit memory copy instructions
@@ -566,11 +543,16 @@ IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_32bytes(void* dest, void* source, uint
     const void* src_p = source;
     void* dest_p = dest;
 
-    const bool needFlush = prepareCache(dest,source,size);    
+#ifdef USE_CACHE
+    // Prepare the cache
+    const bool needFlush = prepareCache(dest, source, size, useCache);
+#endif
 
+    // Start our performance timer
     const uint32_t tstart = esp_cpu_get_cycle_count();
 
-
+    // Do the work - using the ESP32-S3 PIE 128-bit memory copy instructions moving 16 bytes per iteration
+    // ====================================================================================================
     /* Alternating access between two Q registers allows the pipeline to hide the latency
        incurred from the data dependency of successive instructions.
        Interestingly, the still present data dependency on the _address_ register does
@@ -597,9 +579,13 @@ IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_32bytes(void* dest, void* source, uint
     //     : "memory"
     // );
 
-    if(needFlush) {
-        flushCache(dest,size);
-    }    
+#ifdef USE_CACHE
+    // Flush the cache if needed
+    if (needFlush) {
+        compiler_mem_barrier(dest,size);
+        flushCache(dest, size);
+    }
+#endif
 
     // Display the resuilts
     const uint32_t tstop = esp_cpu_get_cycle_count();
@@ -616,25 +602,32 @@ IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_32bytes(void* dest, void* source, uint
 /// @param size amount of memory to copy
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
-IRAM_ATTR esp_err_t CopyBuffer_DSP(void* dest, void* source, uint32_t size, const char *desc)
+IRAM_ATTR esp_err_t CopyBuffer_DSP(void* dest, void* source, uint32_t size, const char *desc, const bool useCache)
 {
 
-    const bool needFlush = prepareCache(dest,source,size);    
+#ifdef USE_CACHE
+    // Prepare the cache
+    const bool needFlush = prepareCache(dest, source, size, useCache);
+#endif
 
-    // Copy the source to dest using the ESP32-S3 dsp memory copy instructions
+    // Start our performance timer
     const uint32_t tstart = esp_cpu_get_cycle_count();
 
-    // Do the work
+    // Do the work - using the ESP32-S3 dsp memory copy instructions
     void *ret = dsps_memcpy_aes3(dest, source, size);
     if (!ret) {
         ESP_LOGE(TAG, "Failed to execute dsps_memcpy_aes3.");
         return ESP_FAIL;
     }
 
-    if(needFlush) {
-        flushCache(dest,size);
-    }    
-    
+#ifdef USE_CACHE
+    // Flush the cache if needed
+    if (needFlush) {
+        compiler_mem_barrier(dest,size);
+        flushCache(dest, size);
+    }
+#endif
+
     // Display the resuilts
     const uint32_t tstop = esp_cpu_get_cycle_count();
     Display_Results("DSP AES3 ", desc, tstart, tstop, dest, source, size);
@@ -650,34 +643,101 @@ IRAM_ATTR esp_err_t CopyBuffer_DSP(void* dest, void* source, uint32_t size, cons
 /// @param size amount of memory to copy
 /// @param desc used in the debug messages to describe the copy
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
-IRAM_ATTR esp_err_t CopyBuffer(void* dest, void* source, uint32_t size, uint32_t align, const char *desc)
+IRAM_ATTR esp_err_t CopyBuffer(void* dest, void* source, uint32_t size, uint32_t align, bool useCache, const char *desc)
 {
 
     // Wait a moment for previous logging to finish.
     vTaskDelay(50/portTICK_PERIOD_MS);
 
     // No meaningful difference between a for loop and a while loop
-    CopyBuffer_ForLoop<uint8_t>(dest, source, size, "8-bit ", desc);
-    CopyBuffer_ForLoop<uint16_t>(dest, source, size, "16-bit ", desc);
-    CopyBuffer_ForLoop<uint32_t>(dest, source, size, "32-bit ", desc);
-    CopyBuffer_ForLoop<uint64_t>(dest, source, size, "64-bit ", desc);
+    CopyBuffer_ForLoop<uint8_t>(dest, source, size, "8-bit ", desc, useCache);
+    CopyBuffer_ForLoop<uint16_t>(dest, source, size, "16-bit ", desc, useCache);
+    CopyBuffer_ForLoop<uint32_t>(dest, source, size, "32-bit ", desc, useCache);
+    CopyBuffer_ForLoop<uint64_t>(dest, source, size, "64-bit ", desc, useCache);
 
     // CopyBuffer_8BitForLoop(dest, source, size, desc);
     // CopyBuffer_16BitForLoop(dest, source, size, desc);
     // CopyBuffer_32BitForLoop(dest, source, size, desc);
     // CopyBuffer_64BitForLoop(dest, source, size, desc);
 
-    CopyBuffer_memcpy(dest, source, size, desc);
+    CopyBuffer_memcpy(dest, source, size, desc, useCache);
 
     CopyBuffer_DMA(dest, source, size, align, desc);
 
-    CopyBuffer_PIE_128bit_16bytes(dest, source, size, desc);
+    CopyBuffer_PIE_128bit_16bytes(dest, source, size, desc, useCache);
 
-    CopyBuffer_PIE_128bit_32bytes(dest, source, size, desc);
+    CopyBuffer_PIE_128bit_32bytes(dest, source, size, desc, useCache);
 
-    CopyBuffer_DSP(dest, source, size, desc);
+    CopyBuffer_DSP(dest, source, size, desc, useCache);
 
     return ESP_OK;
+
+}
+
+
+/// @brief Copies memory between various RAM types using different methods and benchmarks the performance
+/// @param size The size of the memory to copy
+/// @param align The alignment size to use when allocating the memory
+void IRAM_ATTR MemoryCopy_V1(uint32_t size, uint32_t align)
+{
+
+    // Decide whether to use the PSRAM cache
+    bool useCache = false;
+#ifdef USE_CACHE
+    useCache = true;
+#endif
+
+    // Hello world
+    ESP_LOGI(TAG, "\n\nmemory copy version 1.2\n");
+    if (useCache)
+        ESP_LOGI(TAG, "Using PSRAM CACHE\n");
+    else
+        ESP_LOGI(TAG, "NOT using PSRAM CACHE\n");
+
+    // Test copying from IRAM to IRAM using 32 byte alignment
+    ESP_LOGI(TAG, "Allocating 2 x %" PRIu32 "kb in IRAM, alignment: %" PRIu32 " bytes", size/1024, align);
+    _source = heap_caps_aligned_alloc(align, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    _dest = heap_caps_aligned_alloc(align, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    if(!_dest || !_source) {
+        ESP_LOGE(TAG, "Memory Allocation failed");
+        return;
+    }
+    Initialize_Buffer(_source, size);
+    CopyBuffer(_source, _dest, size, align, false, "IRAM->IRAM");
+
+    // Test copying from IRAM to PSRAM using 32 byte alignment
+    printf("\n");
+    ESP_LOGI(TAG, "Freeing %" PRIu32 "kb from IRAM", size/1024);
+    free(_dest);
+    ESP_LOGI(TAG, "Allocating %" PRIu32 "kb in PSRAM, alignment: %" PRIu32 " bytes", size/1024, align);
+    _dest = heap_caps_aligned_alloc(align, size, MALLOC_CAP_SPIRAM);
+    if(!_dest || !_source) {
+        ESP_LOGE(TAG, "Memory Allocation failed");
+        return;
+    }
+    CopyBuffer(_source, _dest, size, align, useCache, "IRAM->PSRAM");
+
+    // Test copying from PSRAM to IRAM using 32 byte alignment
+    printf("\n");
+    ESP_LOGI(TAG, "Swapping source and destination buffers");
+    void* temp = _source; _source = _dest; _dest = temp;
+    CopyBuffer(_source, _dest, size, align, useCache, "PSRAM->IRAM");
+
+    // Test copying from PSRAM to PSRAM using 32 byte alignment
+    printf("\n");
+    ESP_LOGI(TAG, "Freeing %" PRIu32 "kb from IRAM", size/1024);
+    free(_dest);
+    ESP_LOGI(TAG, "Allocating %" PRIu32 "kb in PSRAM, alignment: %" PRIu32 " bytes", size/1024, align);
+    _dest = heap_caps_aligned_alloc(align, size, MALLOC_CAP_SPIRAM);
+    if(!_dest || !_source) {
+        ESP_LOGE(TAG, "Memory Allocation failed");
+        return;
+    }
+    CopyBuffer(_source, _dest, size, align, useCache, "PSRAM->PSRAM");
+
+    // Free the memory
+    free(_source);
+    free(_dest);
 
 }
 
