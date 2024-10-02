@@ -14,6 +14,7 @@
 #include <inttypes.h>
 #include <string>
 #include <string.h>
+#include <cstring>
 #include <utility>
 #include <type_traits>
 
@@ -22,6 +23,7 @@
 #include "esp_heap_caps.h"
 #include "esp_async_memcpy.h"
 #include "esp_random.h"
+#include "esp_clk_tree.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -31,8 +33,8 @@
 #include "dsps_mem.h"
 
 #include "esp_cache.h"
-// #include "esp_mmu_map.h"
 #include "hal/mmu_hal.h"
+#include "rom/cache.h"
 
 using namespace std;
 
@@ -93,8 +95,9 @@ static IRAM_ATTR inline void INL vld_128_ip(S*& src) {
         "EE.VLD.128.IP q%[reg], %[src], %[inc]"
         : [src] "+r" (src)
         : [reg] "i" (R),
-          [inc] "i" (INC)
-        : "memory"
+          [inc] "i" (INC),
+          "m" (*(const uint8_t(*)[16])src)
+        : 
     );
 }
 
@@ -107,11 +110,63 @@ requires ( R <= 7 && ((INC & 0xf) == 0) && (-2048 <= INC) && (INC <= 2032) && !s
 static IRAM_ATTR inline void INL vst_128_ip(D*& dest) {
     asm volatile (
         "EE.VST.128.IP q%[reg], %[dest], %[inc]"
-        : [dest] "+r" (dest)
+        : [dest] "+r" (dest),
+          "=m" (*(uint8_t(*)[16])dest)
         : [reg] "i" (R),
           [inc] "i" (INC)
-        : "memory"              
+        : 
     );
+}
+
+namespace internal {
+
+    static uint16_t cacheLineSize;
+
+    // Cache control directly via functions provided in ROM.
+    // Don't try this at home! Always use the public APIs prescribed by Espressif.
+
+    static void fetchCacheLineSize() {
+        struct cache_mode cm;
+        cm.icache = 0; // data cache
+        Cache_Get_Mode(&cm);
+        cacheLineSize = cm.cache_line_size;
+    }
+
+    static uint32_t getCacheLineSize() {
+        if(cacheLineSize == 0) [[unlikely]] {
+            fetchCacheLineSize();
+        }
+        return cacheLineSize;
+    }
+
+    template<auto OP>
+    static void onRange(void* addr, size_t size) {
+        const uint32_t ls = getCacheLineSize();
+        const uint32_t off = ((uint32_t)addr) & (ls-1);
+        const uint32_t start = ((uint32_t)addr - off);        
+        const uint32_t lines = (size + off + (ls-1)) / ls;
+        OP(start,lines);
+    }
+
+    static void writeBack(void* addr, size_t size) {
+        onRange<Cache_WriteBack_Items>(addr,size);
+    }
+
+    static void invalidate(void* addr, size_t size) {
+        onRange<Cache_Invalidate_DCache_Items>(addr,size);
+    }
+
+    static void invalidateCache() {
+        Cache_Invalidate_DCache_All();
+    }
+
+    static void clean(void* addr, size_t size) {
+        onRange<Cache_Clean_Items>(addr,size);
+    }
+
+    static void cleanCache() {
+        Cache_Clean_All();
+    }
 }
 
 /**
@@ -124,6 +179,8 @@ static IRAM_ATTR inline void INL vst_128_ip(D*& dest) {
  */
 static inline bool flushCache(void* const addr, const size_t size) {
     return esp_cache_msync(addr,size,ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_TYPE_DATA) == ESP_OK;
+    // internal::writeBack(addr,size);
+    // return true;
 }
 
 /**
@@ -136,6 +193,12 @@ static inline bool flushCache(void* const addr, const size_t size) {
  */
 static inline bool invalidateCache(void* const addr, const size_t size) {
     return esp_cache_msync(addr,size,ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_TYPE_DATA) == ESP_OK;
+    // internal::invalidate(addr,size);
+    // return true;
+}
+
+static inline void invalidateCache() {
+    internal::invalidateCache();
 }
 
 /**
@@ -148,6 +211,13 @@ static inline bool invalidateCache(void* const addr, const size_t size) {
  */
 static inline bool uncacheForWrite(void* const addr, const size_t size) {
     return invalidateCache(addr,size);
+    // internal::clean(addr,size);
+    return true;
+}
+
+static inline bool uncacheForWrite() {
+    internal::cleanCache();
+    return true;
 }
 
 /**
@@ -163,10 +233,7 @@ static inline bool uncacheForRead(void* const addr, const size_t size) {
 }
 
 static inline bool isExtMem(void* const addr) {
-    // esp_paddr_t paddr;
-    // mmu_target_t mmu;
-    return mmu_hal_check_valid_ext_vaddr_region(0, (uint32_t)addr, 1, (mmu_vaddr_t)(MMU_VADDR_DATA | MMU_VADDR_INSTRUCTION));
-    // return esp_mmu_vaddr_to_paddr(addr, &paddr, &mmu) == ESP_OK;
+    return mmu_hal_check_valid_ext_vaddr_region(0, (uint32_t)addr, 1, MMU_VADDR_DATA );
 }
 
 
@@ -177,12 +244,6 @@ static inline void INL compiler_mem_barrier(void* const addr, const size_t size)
     */
     asm volatile("":"+m" (*(uint8_t(*)[size])addr));
 }
-
-// static inline void INL compiler_fence_release(void* const addr, const size_t size) {
-//     // Let the compiler know that we need all data actually written to memory at this point.
-//     asm volatile(""::"m" (*(uint8_t(*)[size])addr));
-// }
-
 
 
 /**
@@ -198,15 +259,18 @@ static inline void INL compiler_mem_barrier(void* const addr, const size_t size)
 static inline bool prepareCache(void* const dest, void* const src, const size_t size, const bool useCache) 
 {
 
+    compiler_mem_barrier(src,size);
+
     // Do nothing if we're not using the cache
     if (! useCache)
         return false;
 
-    compiler_mem_barrier(src,size);
     if(isExtMem(src)) {
+        // ESP_LOGI(TAG, "SRC is ext.");
         uncacheForRead(src,size);
     }
     if(isExtMem(dest)) {
+        // ESP_LOGI(TAG, "DEST is ext.");
         return uncacheForWrite(dest,size);
     } else {
         return false;
@@ -233,8 +297,9 @@ void Initialize_Buffer(void *buffer, uint32_t size);
 /// @param cb_args User defined arguments, passed from esp_async_memcpy function
 /// @return Whether a high priority task is woken up by the callback function
 static IRAM_ATTR bool dmacpy_cb(async_memcpy_t hdl, async_memcpy_event_t*, void* args) {
+    const uint32_t now = esp_cpu_get_cycle_count();
     BaseType_t r = pdFALSE;
-    xTaskNotifyFromISR((TaskHandle_t)args,0,eNoAction,&r);
+    xTaskNotifyFromISR((TaskHandle_t)args,now,eSetValueWithOverwrite,&r);
     return (r!=pdFALSE);
 }
 
@@ -259,9 +324,13 @@ void Initialize_Buffer(void *buffer, uint32_t size)
 string Calc_Bandwidth(uint32_t tstart, uint32_t tstop, uint32_t size)
 {
 
-    // Calculate the bandwidth in MB/s given a clock frequency of 240Mhz
+    uint32_t f_cpu = 240000000;
+    // Calculate the bandwidth in MB/s based on the current CPU clock frequency.
+    if(esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_CPU,ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &f_cpu) != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to get CPU clock. Assuming %" PRIu32 " MHz.", f_cpu / 1000000);
+    }
     uint32_t cycles = tstop - tstart;
-    float seconds = (float)cycles / 240000000.0f;
+    float seconds = (float)cycles / f_cpu; // 240000000.0f;
     float bandwidth = (float)size / (1024.0f * 1024.0f * seconds);
 
     // Return the bandwidth as a string
@@ -299,13 +368,7 @@ void Display_Results(string prefix, string desc, uint32_t tstart, uint32_t tstop
 {
 
     // Compare the destination and source buffers
-    bool match = true;
-    for (uint32_t i = 0; i < size; i++) {
-        if (((uint8_t*)source)[i] != ((uint8_t*)dest)[i]) {
-            match = false;
-            break;  
-        }
-    }
+    const bool match = memcmp(source,dest,size) == 0;
 
     // Display the performance if they match, or and error if they dont
     if (match)
@@ -333,7 +396,7 @@ static IRAM_ATTR inline void CopyBuffer_ForLoop(void* dest, void* source, uint32
     // Attempt the copy using code with a 32 bit pointer
     T* pSource = (T*)source;
     T* pDest = (T*)dest;
-    const int aCopies = size / sizeof(T);
+    int aCopies = size / sizeof(T);
 
 #ifdef USE_CACHE
     // Prepare the cache
@@ -349,10 +412,11 @@ static IRAM_ATTR inline void CopyBuffer_ForLoop(void* dest, void* source, uint32
         pDest[i] = pSource[i];
     }
 
+    compiler_mem_barrier(dest,size);
+
 #ifdef USE_CACHE
     // Flush the cache if needed
     if (needFlush) {
-        compiler_mem_barrier(dest,size);
         flushCache(dest, size);
     }
 #endif
@@ -388,8 +452,10 @@ IRAM_ATTR esp_err_t CopyBuffer_memcpy(void* dest, void* source, uint32_t size, c
 #ifdef USE_CACHE
     // Flush the cache if needed
     if (needFlush) {
-        //compiler_mem_barrier(dest,size);
+        // const uint32_t _s = esp_cpu_get_cycle_count();
         flushCache(dest, size);
+        // const uint32_t _c = esp_cpu_get_cycle_count() - _s;
+        // ESP_LOGI(TAG, "Flush took %" PRIu32 " cycles", _c);
     }
 #endif
 
@@ -444,12 +510,9 @@ IRAM_ATTR esp_err_t CopyBuffer_DMA(void* dest, void* source, uint32_t size, uint
     const uint32_t tstart = esp_cpu_get_cycle_count();
     r = esp_async_memcpy(handle, _dest, _source, size, &dmacpy_cb, (void*)task);
     if(r == ESP_OK) {
-        if(xTaskNotifyWait(0,0,0,1000/portTICK_PERIOD_MS)) {
-            // if(needFlush) {
-            //     flushCache(dest,size);
-            // }
+        uint32_t tstop; // We get the tstop value from the callback via the notification.
+        if(xTaskNotifyWait(0,0,&tstop,1000/portTICK_PERIOD_MS)) {
             // Display the results
-            const uint32_t tstop = esp_cpu_get_cycle_count();
             Display_Results("async_memcpy ", desc, tstart, tstop, dest, source, size);
         } else {
             ESP_LOGE(TAG, "Timed out waiting for async_memcpy.");
@@ -474,8 +537,6 @@ IRAM_ATTR esp_err_t CopyBuffer_DMA(void* dest, void* source, uint32_t size, uint
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
 IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_16bytes(void* dest, void* source, uint32_t size, const char *desc, const bool useCache)
 {
-
-
     // Copy the source to dest using the ESP32-S3 PIE 128-bit memory copy instructions
 
     // Setup the variables
@@ -492,7 +553,9 @@ IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_16bytes(void* dest, void* source, uint
     // Start our performance timer
     const uint32_t tstart = esp_cpu_get_cycle_count();
 
-    // Do the work - using the ESP32-S3 PIE 128-bit memory copy instructions moving 16 bytes per iteration
+    // Do the work - using the ESP32-S3 PIE 128-bit load/store instructions moving 16 bytes per iteration
+
+    // Due to the extra latency of the load instruction, this code copies 16 bytes in (2+1) CPU clock cycles.
     rpt(cnt, [&src_p,&dest_p]() {
         vld_128_ip<0>(src_p); // Load 16 bytes from RAM into q0, increment src_p
         vst_128_ip<0>(dest_p); // Store 16 bytes from q0 to RAM, increment dest_p
@@ -525,7 +588,7 @@ IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_16bytes(void* dest, void* source, uint
 
 }
 
-/// @brief Copies a buffer using the ESP32-S3 PIE 128-bit memory copy instructions in a pipeline-friendly 32-byte loop
+/// @brief Copies a buffer using the ESP32-S3 PIE 128-bit load/store instructions in a pipeline-friendly 32-byte loop
 /// @param dest pointer to the buffer to copy to
 /// @param source pointer to the buffer to copy from
 /// @param size amount of memory to copy
@@ -534,7 +597,7 @@ IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_16bytes(void* dest, void* source, uint
 IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_32bytes(void* dest, void* source, uint32_t size, const char *desc, const bool useCache)
 {
 
-    // Copy the source to dest using the ESP32-S3 PIE 128-bit memory copy instructions
+    // Copy the source to dest using the ESP32-S3 PIE 128-bit load/store instructions
 
 
     // Do the work
@@ -551,12 +614,14 @@ IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_32bytes(void* dest, void* source, uint
     // Start our performance timer
     const uint32_t tstart = esp_cpu_get_cycle_count();
 
-    // Do the work - using the ESP32-S3 PIE 128-bit memory copy instructions moving 16 bytes per iteration
+    // Do the work - using the ESP32-S3 PIE 128-bit load/store instructions moving 32 bytes per iteration
     // ====================================================================================================
     /* Alternating access between two Q registers allows the pipeline to hide the latency
        incurred from the data dependency of successive instructions.
-       Interestingly, the still present data dependency on the _address_ register does
+       Interestingly, the still-present data dependency on the _address_ register does
        _not_ induce any pipeline stalls.
+
+       Thanks to the CPU pipeline, this code copies 32 bytes in 4 CPU clock cycles.
     */
     rpt(cnt, [&src_p,&dest_p]() {
         vld_128_ip<0>(src_p); // Load 16 bytes from RAM into q0, increment src_p
@@ -636,6 +701,18 @@ IRAM_ATTR esp_err_t CopyBuffer_DSP(void* dest, void* source, uint32_t size, cons
 
 }
 
+/**
+ * @brief Fill \p dest with 0 and make sure the data has passed the cache.
+ * 
+ * @param dest 
+ * @param size 
+ */
+static void clearBuffer(void* dest, size_t size) {
+    memset(dest,0,size);
+    if(isExtMem(dest)) {
+        flushCache(dest,size);
+    }    
+}
 
 /// @brief Copies a buffer using all the different methods
 /// @param dest pointer to the buffer to copy to
@@ -649,11 +726,24 @@ IRAM_ATTR esp_err_t CopyBuffer(void* dest, void* source, uint32_t size, uint32_t
     // Wait a moment for previous logging to finish.
     vTaskDelay(50/portTICK_PERIOD_MS);
 
+    clearBuffer(dest,size);
+
     // No meaningful difference between a for loop and a while loop
     CopyBuffer_ForLoop<uint8_t>(dest, source, size, "8-bit ", desc, useCache);
+    
+    clearBuffer(dest,size);
+
     CopyBuffer_ForLoop<uint16_t>(dest, source, size, "16-bit ", desc, useCache);
+
+    clearBuffer(dest,size);
+
     CopyBuffer_ForLoop<uint32_t>(dest, source, size, "32-bit ", desc, useCache);
+
+    clearBuffer(dest,size);
+
     CopyBuffer_ForLoop<uint64_t>(dest, source, size, "64-bit ", desc, useCache);
+
+    clearBuffer(dest,size);
 
     // CopyBuffer_8BitForLoop(dest, source, size, desc);
     // CopyBuffer_16BitForLoop(dest, source, size, desc);
@@ -662,13 +752,23 @@ IRAM_ATTR esp_err_t CopyBuffer(void* dest, void* source, uint32_t size, uint32_t
 
     CopyBuffer_memcpy(dest, source, size, desc, useCache);
 
+    clearBuffer(dest,size);
+
     CopyBuffer_DMA(dest, source, size, align, desc);
+
+    clearBuffer(dest,size);
 
     CopyBuffer_PIE_128bit_16bytes(dest, source, size, desc, useCache);
 
+    clearBuffer(dest,size);
+
     CopyBuffer_PIE_128bit_32bytes(dest, source, size, desc, useCache);
 
+    clearBuffer(dest,size);
+
     CopyBuffer_DSP(dest, source, size, desc, useCache);
+
+    clearBuffer(dest,size);
 
     return ESP_OK;
 
@@ -688,7 +788,7 @@ void IRAM_ATTR MemoryCopy_V1(uint32_t size, uint32_t align)
 #endif
 
     // Hello world
-    ESP_LOGI(TAG, "\n\nmemory copy version 1.2\n");
+    ESP_LOGI(TAG, "\n\nmemory copy version 1.3\n");
     if (useCache)
         ESP_LOGI(TAG, "Using PSRAM CACHE\n");
     else
@@ -703,7 +803,7 @@ void IRAM_ATTR MemoryCopy_V1(uint32_t size, uint32_t align)
         return;
     }
     Initialize_Buffer(_source, size);
-    CopyBuffer(_source, _dest, size, align, false, "IRAM->IRAM");
+    CopyBuffer(_dest, _source, size, align, false, "IRAM->IRAM");
 
     // Test copying from IRAM to PSRAM using 32 byte alignment
     printf("\n");
@@ -715,13 +815,14 @@ void IRAM_ATTR MemoryCopy_V1(uint32_t size, uint32_t align)
         ESP_LOGE(TAG, "Memory Allocation failed");
         return;
     }
-    CopyBuffer(_source, _dest, size, align, useCache, "IRAM->PSRAM");
+    CopyBuffer(_dest, _source, size, align, useCache, "IRAM->PSRAM");
 
     // Test copying from PSRAM to IRAM using 32 byte alignment
     printf("\n");
     ESP_LOGI(TAG, "Swapping source and destination buffers");
-    void* temp = _source; _source = _dest; _dest = temp;
-    CopyBuffer(_source, _dest, size, align, useCache, "PSRAM->IRAM");
+    { void* temp = _source; _source = _dest; _dest = temp; }
+    Initialize_Buffer(_source,size); // Fill the new source buffer with data.
+    CopyBuffer(_dest, _source, size, align, useCache, "PSRAM->IRAM");
 
     // Test copying from PSRAM to PSRAM using 32 byte alignment
     printf("\n");
@@ -733,7 +834,7 @@ void IRAM_ATTR MemoryCopy_V1(uint32_t size, uint32_t align)
         ESP_LOGE(TAG, "Memory Allocation failed");
         return;
     }
-    CopyBuffer(_source, _dest, size, align, useCache, "PSRAM->PSRAM");
+    CopyBuffer(_dest, _source, size, align, useCache, "PSRAM->PSRAM");
 
     // Free the memory
     free(_source);
@@ -745,6 +846,6 @@ void IRAM_ATTR MemoryCopy_V1(uint32_t size, uint32_t align)
 /// @brief Main application entry point
 extern "C" void app_main(void)
 {
-    // Run the copy on 100KB of data with 32 byte alignment
-    MemoryCopy_V1(100 * 1024, 32);
+    // Run the copy on 100KB of data with cache line alignment
+    MemoryCopy_V1(100 * 1024, internal::getCacheLineSize());
 }
