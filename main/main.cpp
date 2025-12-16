@@ -38,139 +38,110 @@
 
 using namespace std;
 
-static const char *TAG = "Memory Copy";
+static constexpr const char* TAG = "Memory Copy";
 
 
-// Uncomment to use the PSRAM cache
-#define USE_CACHE 
+// If defined, the PSRAM cache is taken into account in the respective benchmarks
+#define CACHE_AWARE 
 
 
 #define INL __attribute__((always_inline))
 
-/**
- * @brief Uses Xtensa's zero-overhead loop to execute a given operation a number of times.
- * This function does \e not save/restore the LOOP registers, so if required these need to be 
- * saved&restored explicitly around the function call.
- * @note This may fail to assemble when compiled with \c -Og or less
- * 
- * @tparam F Type of the functor to execute
- * @tparam Args Argument types of the functor
- * @param cnt Number of iterations
- * @param f The functor to invoke
- * @param args Arguments to pass to the functor
- */
-template<typename F, typename...Args>
-static IRAM_ATTR inline void INL rpt(const uint32_t cnt, const F& f, Args&&...args) {
-
-    bgn:
-        asm goto (
-            "LOOPNEZ %[cnt], %l[end]"
-            : /* no output*/
-            : [cnt] "r" (cnt)
-            : /* no clobbers */
-            : end
-        );
-
-            f(std::forward<Args>(args)...);
-
- 
-    end:
-        /* Tell the compiler that the above code might execute more than once.
-           The begin label must be before the inital LOOP asm because otherwise
-           gcc may decide to put one-off setup code between the LOOP asm and the
-           begin label, i.e. inside the loop.
-        */
-        asm goto ("":::: bgn);    
-        ;
-}
-
-/*
-    q<R> = *(src & ~0xf);
-    src += INC;
-*/
-template<uint8_t R, int16_t INC = 16, typename S>
-requires ( R <= 7 && ((INC & 0xf) == 0) && (-2048 <= INC) && (INC <= 2032) )
-static IRAM_ATTR inline void INL vld_128_ip(S*& src) {
-    asm volatile (
-        "EE.VLD.128.IP q%[reg], %[src], %[inc]"
-        : [src] "+r" (src)
-        : [reg] "i" (R),
-          [inc] "i" (INC),
-          "m" (*(const uint8_t(*)[16])src)
-        : 
-    );
-}
-
-/*
-    *(dest & ~0xf) = q<R>;
-    dest += INC;
-*/
-template<uint8_t R, int16_t INC = 16, typename D>
-requires ( R <= 7 && ((INC & 0xf) == 0) && (-2048 <= INC) && (INC <= 2032) && !std::is_const_v<D> )
-static IRAM_ATTR inline void INL vst_128_ip(D*& dest) {
-    asm volatile (
-        "EE.VST.128.IP q%[reg], %[dest], %[inc]"
-        : [dest] "+r" (dest),
-          "=m" (*(uint8_t(*)[16])dest)
-        : [reg] "i" (R),
-          [inc] "i" (INC)
-        : 
-    );
-}
-
 namespace internal {
 
-    static uint16_t cacheLineSize;
 
     // Cache control directly via functions provided in ROM.
     // Don't try this at home! Always use the public APIs prescribed by Espressif.
 
-    static void fetchCacheLineSize() {
-        struct cache_mode cm;
-        cm.icache = 0; // data cache
-        Cache_Get_Mode(&cm);
-        cacheLineSize = cm.cache_line_size;
-    }
+    class DataCache {
+        public:
 
-    static uint32_t getCacheLineSize() {
-        if(cacheLineSize == 0) [[unlikely]] {
-            fetchCacheLineSize();
+        DataCache() noexcept :
+            cacheLineSizeLog2 {queryCacheLineSizeLog2()}
+        {
         }
-        return cacheLineSize;
-    }
 
-    template<auto OP>
-    static void onRange(void* addr, size_t size) {
-        const uint32_t ls = getCacheLineSize();
-        const uint32_t off = ((uint32_t)addr) & (ls-1);
-        const uint32_t start = ((uint32_t)addr - off);        
-        const uint32_t lines = (size + off + (ls-1)) / ls;
-        OP(start,lines);
-    }
 
-    static void writeBack(void* addr, size_t size) {
-        onRange<Cache_WriteBack_Items>(addr,size);
-    }
+        /**
+         * @brief Check if a memory address is accessed through the data cache.
+         * 
+         * @param addr 
+         * @return true 
+         * @return false 
+         */
+        bool isCacheable(const void* const addr) const noexcept {
+            return Cache_Address_Through_DCache((uint32_t)addr);
+        }
 
-    static void invalidate(void* addr, size_t size) {
-        onRange<Cache_Invalidate_DCache_Items>(addr,size);
-    }
+        uint32_t getCacheLineSize() const noexcept {
+            return 1ul << this->getCacheLineSizeLog2();
+        }
 
-    static void invalidateCache() {
-        Cache_Invalidate_DCache_All();
-    }
+        uint32_t getCacheLineSizeLog2() const noexcept {
+            // if(this->cacheLineSizeLog2 == 0) [[unlikely]] {
+            //     fetchCacheLineSize();
+            // }
+            return this->cacheLineSizeLog2;
+        }
 
-    static void clean(void* addr, size_t size) {
-        onRange<Cache_Clean_Items>(addr,size);
-    }
+        void writeBack(void* addr, size_t size) const noexcept {
+            onRange<Cache_WriteBack_Items>(addr,size);
+        }   
 
-    static void cleanCache() {
-        Cache_Clean_All();
-    }
+        void invalidate(const void* addr, size_t size) const noexcept {
+            onRange<Cache_Invalidate_DCache_Items>(addr,size);
+        }  
+
+        void invalidate() const noexcept {
+            Cache_Invalidate_DCache_All();
+        }
+
+        void clean(void* addr, size_t size) const noexcept {
+            onRange<Cache_Clean_Items>(addr,size);
+        }
+
+        void clean() const noexcept {
+            Cache_Clean_All();
+        }                          
+
+        private:
+            uint8_t cacheLineSizeLog2;
+
+            static uint8_t queryCacheLineSizeLog2() noexcept {
+                struct cache_mode cm;
+                cm.icache = 0; // 0 = data cache
+                Cache_Get_Mode(&cm);
+
+                assert((cm.cache_line_size != 0) && ((cm.cache_line_size & (cm.cache_line_size-1)) == 0)); // Cache line size must be a power of 2.
+                return 31 - __builtin_clz((uint32_t)cm.cache_line_size);
+            }
+
+            /**
+             * @brief Performs a cache operation on an address range.
+             * The operation is executed on \e all cache lines overlapping the given address range; i.e.
+             * up to \c cacheLineSize-1 bytes below \p addr and above \p addr + size may be affected.
+             * 
+             * @tparam OP Cache operation to perform.
+             * @param addr start of the address range
+             * @param size size of the address range
+             */
+            template<auto OP>
+            void onRange(const void* const addr, const size_t size) const noexcept {
+                const uint32_t lsLog2 = this->cacheLineSizeLog2;                 
+                const uint32_t ls = 1ul << lsLog2;
+                const uint32_t off = ((uint32_t)addr) & (ls-1);
+                const uint32_t start = ((uint32_t)addr - off); 
+                const uint32_t lines = (size + off + (ls-1)) >> lsLog2;
+                OP(start,lines);
+            }                        
+    };
+
+    static const DataCache CACHE {};
+
 }
 
 /**
- * @brief Flush and invalidate a memory region from the cache.
+ * @brief Flush (write back) a memory region from the cache.
  * 
  * @param addr 
  * @param size 
@@ -178,9 +149,8 @@ namespace internal {
  * @return false 
  */
 static inline bool flushCache(void* const addr, const size_t size) {
-    return esp_cache_msync(addr,size,ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_TYPE_DATA) == ESP_OK;
-    // internal::writeBack(addr,size);
-    // return true;
+    internal::CACHE.writeBack(addr,size);
+    return true;
 }
 
 /**
@@ -192,17 +162,16 @@ static inline bool flushCache(void* const addr, const size_t size) {
  * @return false 
  */
 static inline bool invalidateCache(void* const addr, const size_t size) {
-    return esp_cache_msync(addr,size,ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_TYPE_DATA) == ESP_OK;
-    // internal::invalidate(addr,size);
-    // return true;
+    internal::CACHE.invalidate(addr,size);
+    return true;
 }
 
 static inline void invalidateCache() {
-    internal::invalidateCache();
+    internal::CACHE.invalidate();
 }
 
 /**
- * @brief Remove data to be overwritte from the cache.
+ * @brief Remove data to be overwritten from the cache.
  * 
  * @param addr 
  * @param size 
@@ -211,12 +180,10 @@ static inline void invalidateCache() {
  */
 static inline bool uncacheForWrite(void* const addr, const size_t size) {
     return invalidateCache(addr,size);
-    // internal::clean(addr,size);
-    return true;
 }
 
 static inline bool uncacheForWrite() {
-    internal::cleanCache();
+    internal::CACHE.clean();
     return true;
 }
 
@@ -232,15 +199,16 @@ static inline bool uncacheForRead(void* const addr, const size_t size) {
     return flushCache(addr,size) && invalidateCache(addr,size);
 }
 
-static inline bool isExtMem(void* const addr) {
-    return mmu_hal_check_valid_ext_vaddr_region(0, (uint32_t)addr, 1, MMU_VADDR_DATA );
+static inline bool isExtMem(const void* const addr) {
+    // return mmu_hal_check_valid_ext_vaddr_region(0, (uint32_t)addr, 1, MMU_VADDR_DATA );
+    return internal::CACHE.isCacheable(addr);
 }
 
 
 static inline void INL compiler_mem_barrier(void* const addr, const size_t size) {
     /* Let the compiler know that
         a) we need all data actually written to memory at addr before this point, and
-        b) it cannot make any assumptions about the memory content at addr after this point.
+        b) it cannot make any assumptions about the memory contents at addr after this point.
     */
     asm volatile("":"+m" (*(uint8_t(*)[size])addr));
 }
@@ -266,18 +234,14 @@ static inline bool prepareCache(void* const dest, void* const src, const size_t 
         return false;
 
     if(isExtMem(src)) {
-        // ESP_LOGI(TAG, "SRC is ext.");
         uncacheForRead(src,size);
     }
     if(isExtMem(dest)) {
-        // ESP_LOGI(TAG, "DEST is ext.");
         return uncacheForWrite(dest,size);
     } else {
         return false;
     }
 }
-
-
 
 /// @brief The source buffer
 void* _source;
@@ -314,6 +278,7 @@ void Initialize_Buffer(void *buffer, uint32_t size)
     {
         ((uint8_t *)buffer)[i] = i + r;
     }
+    compiler_mem_barrier(buffer,size);
 }
 
 
@@ -370,7 +335,7 @@ void Display_Results(string prefix, string desc, uint32_t tstart, uint32_t tstop
     // Compare the destination and source buffers
     const bool match = memcmp(source,dest,size) == 0;
 
-    // Display the performance if they match, or and error if they dont
+    // Display the performance if they match, or an error if they dont
     if (match)
         Display_Performance(prefix, desc, tstart, tstop, size);
     else
@@ -398,7 +363,7 @@ static IRAM_ATTR inline void CopyBuffer_ForLoop(void* dest, void* source, uint32
     T* pDest = (T*)dest;
     int aCopies = size / sizeof(T);
 
-#ifdef USE_CACHE
+#ifdef CACHE_AWARE
     // Prepare the cache
     const bool needFlush = prepareCache(dest, source, size, useCache);
 #endif
@@ -414,7 +379,7 @@ static IRAM_ATTR inline void CopyBuffer_ForLoop(void* dest, void* source, uint32
 
     compiler_mem_barrier(dest,size);
 
-#ifdef USE_CACHE
+#ifdef CACHE_AWARE
     // Flush the cache if needed
     if (needFlush) {
         flushCache(dest, size);
@@ -437,7 +402,7 @@ static IRAM_ATTR inline void CopyBuffer_ForLoop(void* dest, void* source, uint32
 IRAM_ATTR esp_err_t CopyBuffer_memcpy(void* dest, void* source, uint32_t size, const char* desc, const bool useCache)
 {
 
-#ifdef USE_CACHE
+#ifdef CACHE_AWARE
     // Prepare the cache
     const bool needFlush = prepareCache(dest, source, size, useCache);
 #endif
@@ -449,7 +414,7 @@ IRAM_ATTR esp_err_t CopyBuffer_memcpy(void* dest, void* source, uint32_t size, c
     // =======================================
     void* ret = memcpy(dest, source, size);
 
-#ifdef USE_CACHE
+#ifdef CACHE_AWARE
     // Flush the cache if needed
     if (needFlush) {
         // const uint32_t _s = esp_cpu_get_cycle_count();
@@ -483,14 +448,12 @@ IRAM_ATTR esp_err_t CopyBuffer_DMA(void* dest, void* source, uint32_t size, uint
 {
 
     // DMA doesn't use the cache, so no cache prep needed.
-    // const bool needFlush = prepareCache(dest,source,size);
 
     // Install the Async memcpy driver.
     ESP_LOGD(TAG, "Installing async_memcpy driver to support %" PRIu32 " byte transfers", size);
     const uint32_t PSRAM_ALIGN = align;
     const uint32_t INTRAM_ALIGN = PSRAM_ALIGN;
-    //const uint32_t PSRAM_ALIGN = cache_hal_get_cache_line_size(CACHE_TYPE_DATA);
-    //const uint32_t INTRAM_ALIGN = PSRAM_ALIGN;
+
     const async_memcpy_config_t cfg = {
         .backlog = (size+4091)/4092,
         .sram_trans_align = INTRAM_ALIGN,
@@ -507,8 +470,10 @@ IRAM_ATTR esp_err_t CopyBuffer_DMA(void* dest, void* source, uint32_t size, uint
     // Initiate a DMA copy
     ESP_LOGD(TAG, "Starting DMA copy.");
     TaskHandle_t task = xTaskGetCurrentTaskHandle();    
+
     const uint32_t tstart = esp_cpu_get_cycle_count();
     r = esp_async_memcpy(handle, _dest, _source, size, &dmacpy_cb, (void*)task);
+
     if(r == ESP_OK) {
         uint32_t tstop; // We get the tstop value from the callback via the notification.
         if(xTaskNotifyWait(0,0,&tstop,1000/portTICK_PERIOD_MS)) {
@@ -529,7 +494,7 @@ IRAM_ATTR esp_err_t CopyBuffer_DMA(void* dest, void* source, uint32_t size, uint
 }
 
 
-/// @brief Copies a buffer using the ESP32-S3 PIE 128-bit memory copy instructions with 16 bytes per iteration
+/// @brief Copies a buffer using the ESP32-S3 PIE 128-bit load/store instructions with 16 bytes per iteration
 /// @param dest pointer to the buffer to copy to
 /// @param source pointer to the buffer to copy from
 /// @param size amount of memory to copy
@@ -537,7 +502,7 @@ IRAM_ATTR esp_err_t CopyBuffer_DMA(void* dest, void* source, uint32_t size, uint
 /// @return ESP_OK if successful. Otherwise ESP_FAIL
 IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_16bytes(void* dest, void* source, uint32_t size, const char *desc, const bool useCache)
 {
-    // Copy the source to dest using the ESP32-S3 PIE 128-bit memory copy instructions
+    // Copy the source to dest using the ESP32-S3 PIE 128-bit load/store instructions
 
     // Setup the variables
     const uint32_t bytes_per_iteration = 16;
@@ -545,7 +510,7 @@ IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_16bytes(void* dest, void* source, uint
     const void* src_p = source;
     void* dest_p = dest;
 
-#ifdef USE_CACHE
+#ifdef CACHE_AWARE
     // Prepare the cache
     const bool needFlush = prepareCache(dest, source, size, useCache);
 #endif
@@ -556,23 +521,18 @@ IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_16bytes(void* dest, void* source, uint
     // Do the work - using the ESP32-S3 PIE 128-bit load/store instructions moving 16 bytes per iteration
 
     // Due to the extra latency of the load instruction, this code copies 16 bytes in (2+1) CPU clock cycles.
-    rpt(cnt, [&src_p,&dest_p]() {
-        vld_128_ip<0>(src_p); // Load 16 bytes from RAM into q0, increment src_p
-        vst_128_ip<0>(dest_p); // Store 16 bytes from q0 to RAM, increment dest_p
-    });
+    asm volatile (
+        "LOOPNEZ %[cnt], end_loop%=" "\n"
+        "   EE.VLD.128.IP q0, %[src_p], 16" "\n"
+        "   EE.VST.128.IP q0, %[dest_p], 16" "\n"
+        "end_loop%=:"
+        : [src_p] "+r" (src_p), [dest_p] "+r" (dest_p),
+          "=m" (*((uint8_t(*)[size])dest_p))
+        : [cnt] "r" (cnt),
+          "m" (*((const uint8_t(*)[size])src_p))
+    );
 
-    // Same as above:
-    // asm volatile (
-    //     "LOOPNEZ %[cnt], end_loop%=" "\n"
-    //     "   EE.VLD.128.IP q0, %[src_p], 16" "\n"
-    //     "   EE.VST.128.IP q0, %[dest_p], 16" "\n"
-    //     "end_loop%=:"
-    //     : [src_p] "+&r" (src_p), [dest_p] "+&r" (dest_p)
-    //     : [cnt] "r" (cnt)
-    //     : "memory"
-    // );
-
-#ifdef USE_CACHE
+#ifdef CACHE_AWARE
     // Flush the cache if needed
     if (needFlush) {
         compiler_mem_barrier(dest,size);
@@ -606,7 +566,7 @@ IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_32bytes(void* dest, void* source, uint
     const void* src_p = source;
     void* dest_p = dest;
 
-#ifdef USE_CACHE
+#ifdef CACHE_AWARE
     // Prepare the cache
     const bool needFlush = prepareCache(dest, source, size, useCache);
 #endif
@@ -623,28 +583,21 @@ IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_32bytes(void* dest, void* source, uint
 
        Thanks to the CPU pipeline, this code copies 32 bytes in 4 CPU clock cycles.
     */
-    rpt(cnt, [&src_p,&dest_p]() {
-        vld_128_ip<0>(src_p); // Load 16 bytes from RAM into q0, increment src_p
-        vld_128_ip<1>(src_p); // Load 16 bytes from RAM into q1, increment src_p
-        vst_128_ip<0>(dest_p); // Store 16 bytes from q0 to RAM, increment dest_p
-        vst_128_ip<1>(dest_p); // Store 16 bytes from q1 to RAM, increment dest_p
-    });
+    asm volatile (
+        "LOOPNEZ %[cnt], end_loop%=" "\n"
+        "   EE.VLD.128.IP q0, %[src_p], 16" "\n"
+        "   EE.VLD.128.IP q1, %[src_p], 16" "\n"
 
-    // Same as above:
-    // asm volatile (
-    //     "LOOPNEZ %[cnt], end_loop%=" "\n"
-    //     "   EE.VLD.128.IP q0, %[src_p], 16" "\n"
-    //     "   EE.VLD.128.IP q1, %[src_p], 16" "\n"
+        "   EE.VST.128.IP q0, %[dest_p], 16" "\n"
+        "   EE.VST.128.IP q1, %[dest_p], 16" "\n"
+        "end_loop%=:"
+        : [src_p] "+r" (src_p), [dest_p] "+r" (dest_p),
+          "=m" (*((uint8_t(*)[size])dest_p))
+        : [cnt] "r" (cnt),
+          "m" (*((const uint8_t(*)[size])src_p))
+    );
 
-    //     "   EE.VST.128.IP q0, %[dest_p], 16" "\n"
-    //     "   EE.VST.128.IP q1, %[dest_p], 16" "\n"
-    //     "end_loop%=:"
-    //     : [src_p] "+&r" (src_p), [dest_p] "+&r" (dest_p)
-    //     : [cnt] "r" (cnt)
-    //     : "memory"
-    // );
-
-#ifdef USE_CACHE
+#ifdef CACHE_AWARE
     // Flush the cache if needed
     if (needFlush) {
         compiler_mem_barrier(dest,size);
@@ -670,7 +623,7 @@ IRAM_ATTR esp_err_t CopyBuffer_PIE_128bit_32bytes(void* dest, void* source, uint
 IRAM_ATTR esp_err_t CopyBuffer_DSP(void* dest, void* source, uint32_t size, const char *desc, const bool useCache)
 {
 
-#ifdef USE_CACHE
+#ifdef CACHE_AWARE
     // Prepare the cache
     const bool needFlush = prepareCache(dest, source, size, useCache);
 #endif
@@ -685,7 +638,7 @@ IRAM_ATTR esp_err_t CopyBuffer_DSP(void* dest, void* source, uint32_t size, cons
         return ESP_FAIL;
     }
 
-#ifdef USE_CACHE
+#ifdef CACHE_AWARE
     // Flush the cache if needed
     if (needFlush) {
         compiler_mem_barrier(dest,size);
@@ -783,12 +736,12 @@ void IRAM_ATTR MemoryCopy_V1(uint32_t size, uint32_t align)
 
     // Decide whether to use the PSRAM cache
     bool useCache = false;
-#ifdef USE_CACHE
+#ifdef CACHE_AWARE
     useCache = true;
 #endif
 
     // Hello world
-    ESP_LOGI(TAG, "\n\nmemory copy version 1.3\n");
+    ESP_LOGI(TAG, "\n\nmemory copy version 1.4\n");
     if (useCache)
         ESP_LOGI(TAG, "Using PSRAM CACHE flush\n");
     else
@@ -842,10 +795,9 @@ void IRAM_ATTR MemoryCopy_V1(uint32_t size, uint32_t align)
 
 }
 
-
 /// @brief Main application entry point
 extern "C" void app_main(void)
 {
     // Run the copy on 100KB of data with cache line alignment
-    MemoryCopy_V1(100 * 1024, internal::getCacheLineSize());
+    MemoryCopy_V1(100 * 1024, internal::CACHE.getCacheLineSize());
 }
